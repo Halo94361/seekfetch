@@ -1,4 +1,5 @@
 mod api;
+mod clean;
 mod cli;
 mod config;
 mod credentials;

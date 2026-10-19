@@ -17,6 +17,8 @@ This project is not affiliated with or endorsed by DeepSeek.
 | `deepseek_search` | `query`, `count`, `need_content`, `max_chars` | `title`, `url`, `summary`, optional `content`, `rerank_score`, `authority` |
 | `deepseek_fetch` | `url`, `max_chars` | `title`, `url`, `content`, `truncated` |
 
+Known server-side extraction behavior (observed, not configurable): HTML tables are flattened into pipe-joined plain-text lines instead of Markdown tables, and content inside inactive tabs or otherwise hidden sections may be omitted entirely.
+
 ## Install
 
 Prebuilt binaries are attached to [GitHub Releases](https://github.com/Halo94361/seekfetch/releases):

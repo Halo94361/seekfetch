@@ -94,7 +94,18 @@ impl DeepSeekClient {
             need_content,
         };
         let response: SearchResponse = self.post_json("/v1/tools/search", &body).await?;
-        Ok(response.results)
+        let mut results = response.results;
+        for item in &mut results {
+            item.summary = item
+                .summary
+                .take()
+                .map(|s| crate::clean::clean_markdown(&s));
+            item.content = item
+                .content
+                .take()
+                .map(|c| crate::clean::clean_markdown(&c));
+        }
+        Ok(results)
     }
 
     pub async fn fetch(&self, url: &str) -> Result<FetchResult> {
@@ -116,7 +127,7 @@ impl DeepSeekClient {
         Ok(FetchResult {
             title: response.title,
             url: url.to_string(),
-            content: response.content,
+            content: crate::clean::clean_markdown(&response.content),
         })
     }
 
