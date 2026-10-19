@@ -36,4 +36,8 @@ git push github v0.1.0
 - Credentials live in the platform config directory, never in this repository.
 - `DEEPSEEK_API_KEY` overrides the stored credential.
 - Keep MCP tool output truncated by default; a search result should not dump raw API JSON into the model context.
+- Never put credentials in source, config, tests, comments, docs, examples, logs, or commit messages. Runtime secrets come from environment variables or the encrypted credential file only.
+- Never put personal information in code, docs, examples, or commit metadata: real names, personal email addresses, phone numbers, home addresses, local usernames, or absolute paths such as `/home/<user>`.
+- Use placeholders in examples: `YOUR_API_KEY`, `/path/to/seekfetch`, `<user>`.
+- Use a GitHub noreply address for commit authorship. Before pushing, scan the working tree and full history for secrets and personal paths.
 - `origin` is the local Gitea remote; `github` is the public GitHub remote. Push to both.
