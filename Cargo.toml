@@ -1,0 +1,31 @@
+[package]
+name = "seekfetch"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Unofficial MCP server and CLI for DeepSeek Search/Fetch"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Halo94361/seekfetch"
+homepage = "https://github.com/Halo94361/seekfetch"
+keywords = ["mcp", "deepseek", "search", "cli"]
+categories = ["command-line-utilities", "api-bindings"]
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+toml = "0.8"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

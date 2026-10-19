@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install mingw-w64 and zip
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 zip
+
+      - name: Build Linux
+        run: cargo build --release
+
+      - name: Build Windows (GNU)
+        run: cargo build --release --target x86_64-pc-windows-gnu
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          tar -czf "dist/seekfetch-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" \
+            -C target/release seekfetch
+          (cd target/x86_64-pc-windows-gnu/release && \
+            zip "../../../dist/seekfetch-${GITHUB_REF_NAME}-x86_64-pc-windows-gnu.zip" seekfetch.exe)
+          ls -lh dist
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber

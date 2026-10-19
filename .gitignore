@@ -1,0 +1,9 @@
+/target
+/credentials
+.env
+.env.*
+*.key
+*.pem
+*.log
+.DS_Store
+Thumbs.db
