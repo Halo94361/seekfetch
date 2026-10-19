@@ -56,9 +56,16 @@ async fn doctor() -> Result<()> {
 
     match credentials::load_key() {
         Ok(_) => println!("api key: configured"),
-        Err(err) => println!("api key: {err}"),
+        Err(err) => {
+            println!("api key: {err}");
+            return Ok(());
+        }
     }
 
-    // Connectivity check lands here once the API client is implemented.
+    let client = api::DeepSeekClient::from_config()?;
+    match client.search("deepseek", 1, false).await {
+        Ok(_) => println!("connectivity: ok"),
+        Err(err) => println!("connectivity: {err}"),
+    }
     Ok(())
 }

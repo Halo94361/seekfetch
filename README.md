@@ -2,7 +2,7 @@
 
 Unofficial MCP server and CLI for the [DeepSeek Search/Fetch API](https://api-docs.deepseek.com/zh-cn/guides/search), packaged as a single Rust binary.
 
-> **Status: scaffolding.** The CLI surface, config paths and module layout are in place. API calls, credential encryption and the MCP transport are marked `TODO` and not implemented yet.
+The CLI, encrypted credential storage and the MCP server are fully implemented. `seekfetch doctor` verifies configuration, credentials and live API connectivity.
 
 ## Why
 
@@ -10,7 +10,7 @@ DeepSeek Search is currently driven by curl and prompt instructions. This wrappe
 
 This project is not affiliated with or endorsed by DeepSeek.
 
-## Planned tools
+## Tools
 
 | Tool | Input | Output |
 | --- | --- | --- |
