@@ -8,7 +8,9 @@ fn default_base_url() -> String {
 }
 
 fn default_timeout_s() -> u64 {
-    60
+    // Slightly above the API's own ~30s gateway timeout, so the API's error
+    // response (e.g. 504) usually arrives before the client gives up.
+    35
 }
 
 fn default_count() -> u8 {

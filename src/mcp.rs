@@ -254,7 +254,7 @@ fn tool_success(output: Value) -> Value {
 // Tool-level failures are delivered as isError results, not protocol errors.
 fn tool_error_result(err: anyhow::Error) -> Value {
     json!({
-        "content": [{"type": "text", "text": format!("error: {err}")}],
+        "content": [{"type": "text", "text": format!("error: {err:#}")}],
         "isError": true,
     })
 }

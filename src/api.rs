@@ -139,6 +139,12 @@ impl DeepSeekClient {
                         backoff(attempt).await;
                         continue;
                     }
+                    if err.is_timeout() {
+                        return Err(err).context(format!(
+                            "the DeepSeek API did not respond within {}s (timeout_s); for fetch this usually means the target page could not be fetched",
+                            self.config.timeout_s
+                        ));
+                    }
                     return Err(err).context("failed to reach the DeepSeek API");
                 }
             };
@@ -169,16 +175,23 @@ async fn backoff(attempt: u32) {
 }
 
 fn is_retryable_transport(err: &reqwest::Error) -> bool {
-    err.is_timeout() || err.is_connect() || err.is_request()
+    // A timeout means the target did not answer within the budget; a retry would not either.
+    !err.is_timeout() && (err.is_connect() || err.is_request())
 }
 
 fn is_retryable_status(status: StatusCode) -> bool {
+    // 504 means the gateway already gave up on the target page; retrying just waits again.
     status == StatusCode::REQUEST_TIMEOUT
         || status == StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error()
+        || (status.is_server_error() && status != StatusCode::GATEWAY_TIMEOUT)
 }
 
-async fn error_detail(response: reqwest::Response) -> String {
+struct ErrorInfo {
+    message: String,
+    code: Option<String>,
+}
+
+async fn error_detail(response: reqwest::Response) -> ErrorInfo {
     #[derive(Deserialize)]
     struct ErrorBody {
         error: ErrorDetail,
@@ -187,40 +200,59 @@ async fn error_detail(response: reqwest::Response) -> String {
     #[derive(Deserialize)]
     struct ErrorDetail {
         message: String,
+        code: Option<String>,
+        r#type: Option<String>,
     }
 
     let text = response.text().await.unwrap_or_default();
     match serde_json::from_str::<ErrorBody>(&text) {
-        Ok(body) => body.error.message,
+        Ok(body) => ErrorInfo {
+            message: body.error.message,
+            code: body.error.code.or(body.error.r#type),
+        },
         Err(_) => {
             let trimmed = text.trim();
             const MAX_DETAIL_CHARS: usize = 200;
-            if trimmed.chars().count() > MAX_DETAIL_CHARS {
+            let message = if trimmed.chars().count() > MAX_DETAIL_CHARS {
                 format!(
                     "{}…",
                     trimmed.chars().take(MAX_DETAIL_CHARS).collect::<String>()
                 )
             } else {
                 trimmed.to_string()
+            };
+            ErrorInfo {
+                message,
+                code: None,
             }
         }
     }
 }
 
-fn map_error(status: StatusCode, detail: &str) -> String {
+fn map_error(status: StatusCode, info: &ErrorInfo) -> String {
+    let code = match &info.code {
+        Some(code) => format!(" [{code}]"),
+        None => String::new(),
+    };
+    let detail = &info.message;
     match status {
         StatusCode::UNAUTHORIZED => {
-            format!("authentication failed (401): {detail}; check the API key")
+            format!("authentication failed (401){code}: {detail}; check the API key")
         }
         StatusCode::PAYMENT_REQUIRED => {
-            format!("insufficient DeepSeek balance (402): {detail}; top up the account")
+            format!("insufficient DeepSeek balance (402){code}: {detail}; top up the account")
         }
-        StatusCode::FORBIDDEN => format!("request rejected by security policy (403): {detail}"),
-        StatusCode::NOT_FOUND => format!("no usable content at this URL (404): {detail}"),
+        StatusCode::FORBIDDEN => {
+            format!("request rejected by security policy (403){code}: {detail}")
+        }
+        StatusCode::NOT_FOUND => format!("no usable content at this URL (404){code}: {detail}"),
         StatusCode::TOO_MANY_REQUESTS => {
-            format!("rate limited after {MAX_ATTEMPTS} attempts (429): {detail}")
+            format!("rate limited after {MAX_ATTEMPTS} attempts (429){code}: {detail}")
         }
-        _ => format!("DeepSeek API error ({status}): {detail}"),
+        StatusCode::GATEWAY_TIMEOUT => {
+            format!("the target page did not answer in time (504 gateway timeout){code}: {detail}")
+        }
+        _ => format!("DeepSeek API error ({status}){code}: {detail}"),
     }
 }
 
@@ -286,10 +318,44 @@ mod tests {
             }
         }
 
+        fn hanging() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let hits = Arc::new(AtomicUsize::new(0));
+            let thread_hits = hits.clone();
+
+            std::thread::spawn(move || {
+                while let Ok((stream, _)) = listener.accept() {
+                    thread_hits.fetch_add(1, Ordering::SeqCst);
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        match reader.read_line(&mut line) {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) if line.trim().is_empty() => break,
+                            Ok(_) => {}
+                        }
+                    }
+                    // Never respond; the client must give up on its own timeout.
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
+            });
+
+            Self {
+                base_url: format!("http://127.0.0.1:{port}"),
+                hits,
+            }
+        }
+
         fn client(&self) -> DeepSeekClient {
+            self.client_with_timeout(10)
+        }
+
+        fn client_with_timeout(&self, timeout_s: u64) -> DeepSeekClient {
             let config = Config {
                 base_url: self.base_url.clone(),
-                timeout_s: 10,
+                timeout_s,
                 default_count: 10,
                 default_max_chars: 300,
             };
@@ -387,5 +453,50 @@ mod tests {
         let err = server.client().search("q", 5, false).await.unwrap_err();
         assert!(err.to_string().contains("500"));
         assert_eq!(server.hits(), MAX_ATTEMPTS as usize);
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_504_gateway_timeout() {
+        let server = MockServer::serve(vec![
+            (
+                "504 Gateway Timeout",
+                r#"{"error":{"message":"Request timeout","code":"gateway_timeout_error"}}"#,
+            ),
+            ("200 OK", r#"{"results":[]}"#),
+        ]);
+
+        let err = server.client().search("q", 5, false).await.unwrap_err();
+        assert!(err.to_string().contains("504"));
+        assert!(err.to_string().contains("gateway_timeout_error"));
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn timeout_is_not_retried() {
+        let server = MockServer::hanging();
+
+        let err = server
+            .client_with_timeout(1)
+            .search("q", 5, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("did not respond within 1s"));
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn error_message_surfaces_api_code() {
+        let server = MockServer::serve(vec![(
+            "404 Not Found",
+            r#"{"error":{"message":"failed to fetch URL","type":"not_found_error","code":"invalid_request_error"}}"#,
+        )]);
+
+        let err = server
+            .client()
+            .fetch("https://x.example")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no usable content"));
+        assert!(err.to_string().contains("invalid_request_error"));
     }
 }

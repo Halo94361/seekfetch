@@ -87,7 +87,7 @@ Replace `~/.env` with whichever dotenv file holds your key. `DEEPSEEK_API_KEY` i
 
 ```toml
 base_url = "https://api.deepseek.com"
-timeout_s = 60
+timeout_s = 35
 default_count = 10
 default_max_chars = 300
 ```
