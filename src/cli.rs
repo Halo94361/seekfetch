@@ -49,6 +49,13 @@ pub enum Command {
         json: bool,
     },
 
+    /// Show the DeepSeek account balance
+    Balance {
+        /// Print the structured JSON payload instead of a human-readable summary
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Manage configuration and credentials
     Config {
         #[command(subcommand)]

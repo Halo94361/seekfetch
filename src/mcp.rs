@@ -161,6 +161,14 @@ fn tool_definitions(config: &Config) -> Value {
                 "required": ["url"],
             },
         },
+        {
+            "name": "deepseek_balance",
+            "description": "Show the DeepSeek account balance. Returns is_available and balance_infos with currency, total_balance, granted_balance and topped_up_balance.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+            },
+        },
     ])
 }
 
@@ -203,6 +211,10 @@ async fn call_tool(params: Value, config: &Config) -> Result<Value, McpError> {
                 Err(err) => Ok(tool_error_result(err)),
             }
         }
+        "deepseek_balance" => match run_balance().await {
+            Ok(output) => Ok(tool_success(output)),
+            Err(err) => Ok(tool_error_result(err)),
+        },
         _ => Err(McpError::invalid_params(format!("unknown tool: {name}"))),
     }
 }
@@ -243,6 +255,12 @@ async fn run_fetch(url: &str, max_chars: usize) -> Result<Value> {
         &page.content,
         max_chars,
     ))
+}
+
+async fn run_balance() -> Result<Value> {
+    let client = DeepSeekClient::from_config()?;
+    let balance = client.balance().await?;
+    Ok(serde_json::to_value(balance)?)
 }
 
 fn tool_success(output: Value) -> Value {
@@ -328,7 +346,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_exposes_both_tools() {
+    async fn tools_list_exposes_all_tools() {
         let result = dispatch("tools/list", Value::Null, &Config::default())
             .await
             .unwrap();
@@ -338,7 +356,10 @@ mod tests {
             .iter()
             .filter_map(|tool| tool["name"].as_str())
             .collect();
-        assert_eq!(names, ["deepseek_search", "deepseek_fetch"]);
+        assert_eq!(
+            names,
+            ["deepseek_search", "deepseek_fetch", "deepseek_balance"]
+        );
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::api::{FetchResult, SearchResult};
+use crate::api::{Balance, FetchResult, SearchResult};
 
 pub fn print_search(results: &[SearchResult], max_chars: usize, json: bool) -> Result<()> {
     if json {
@@ -39,6 +39,30 @@ pub fn print_fetch(page: &FetchResult, max_chars: usize, json: bool) -> Result<(
     println!("{}", page.url);
     println!();
     println!("{}", truncate(&page.content, max_chars));
+    Ok(())
+}
+
+pub fn print_balance(balance: &Balance, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(balance)?);
+        return Ok(());
+    }
+
+    println!(
+        "available: {}",
+        if balance.is_available { "yes" } else { "no" }
+    );
+    if balance.balance_infos.is_empty() {
+        println!("no balance information");
+        return Ok(());
+    }
+
+    for info in &balance.balance_infos {
+        println!("{}", info.currency);
+        println!("  {:<19}{}", "total balance:", info.total_balance);
+        println!("  {:<19}{}", "granted balance:", info.granted_balance);
+        println!("  {:<19}{}", "topped-up balance:", info.topped_up_balance);
+    }
     Ok(())
 }
 

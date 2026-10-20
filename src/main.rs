@@ -37,6 +37,11 @@ async fn main() -> Result<()> {
             let page = client.fetch(&url).await?;
             output::print_fetch(&page, max_chars, json)
         }
+        Command::Balance { json } => {
+            let client = api::DeepSeekClient::from_config()?;
+            let balance = client.balance().await?;
+            output::print_balance(&balance, json)
+        }
         Command::Config { command } => match command {
             ConfigCommand::SetKey { stdin, from_env } => {
                 credentials::set_key(stdin, from_env.as_deref())

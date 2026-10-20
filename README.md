@@ -16,6 +16,7 @@ This project is not affiliated with or endorsed by DeepSeek.
 | --- | --- | --- |
 | `deepseek_search` | `query`, `count`, `need_content`, `max_chars` | `title`, `url`, `summary`, optional `content`, `rerank_score`, `authority` |
 | `deepseek_fetch` | `url`, `max_chars` | `title`, `url`, `content`, `truncated` |
+| `deepseek_balance` | — | `is_available`, `balance_infos` (`currency`, `total_balance`, `granted_balance`, `topped_up_balance`) |
 
 Known server-side extraction behavior (observed, not configurable): HTML tables are flattened into pipe-joined plain-text lines instead of Markdown tables, and content inside inactive tabs or otherwise hidden sections may be omitted entirely.
 
@@ -56,8 +57,21 @@ Use the absolute path to the built or downloaded binary:
 seekfetch search "rust mcp server" --count 5
 seekfetch fetch "https://example.com" --max-chars 20000
 seekfetch search "site:github.com rust" --json
+seekfetch balance
 seekfetch doctor
 ```
+
+`seekfetch balance` reads the account balance from `GET /user/balance`:
+
+```
+available: yes
+CNY
+  total balance:     93.80
+  granted balance:   0.00
+  topped-up balance: 93.80
+```
+
+Compatible gateways that do not implement the balance endpoint answer 404.
 
 ## Credentials
 
@@ -126,7 +140,7 @@ src/
   cli.rs          clap definitions
   config.rs       config.toml loading and paths
   credentials.rs  encrypted credential storage
-  api.rs          DeepSeek Search/Fetch client
+  api.rs          DeepSeek Search/Fetch/Balance client
   mcp.rs          stdio MCP server
   output.rs       human-readable output and truncation
 ```

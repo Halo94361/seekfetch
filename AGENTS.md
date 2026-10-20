@@ -26,8 +26,8 @@ git push github v0.1.0
 - `src/cli.rs` — clap command surface
 - `src/config.rs` — `config.toml` loading and platform paths
 - `src/credentials.rs` — encrypted credential file (machine-bound key)
-- `src/api.rs` — DeepSeek Search/Fetch client, retry and error mapping
-- `src/mcp.rs` — stdio MCP server exposing `deepseek_search` / `deepseek_fetch`
+- `src/api.rs` — DeepSeek Search/Fetch/Balance client, retry and error mapping
+- `src/mcp.rs` — stdio MCP server exposing `deepseek_search` / `deepseek_fetch` / `deepseek_balance`
 - `src/output.rs` — human-readable output and character truncation
 
 ## Rules

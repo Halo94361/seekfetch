@@ -44,6 +44,26 @@ pub struct FetchResult {
     pub content: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Balance {
+    #[serde(default)]
+    pub is_available: bool,
+    #[serde(default)]
+    pub balance_infos: Vec<BalanceInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BalanceInfo {
+    #[serde(default)]
+    pub currency: String,
+    #[serde(default, deserialize_with = "string_or_number")]
+    pub total_balance: String,
+    #[serde(default, deserialize_with = "string_or_number")]
+    pub granted_balance: String,
+    #[serde(default, deserialize_with = "string_or_number")]
+    pub topped_up_balance: String,
+}
+
 pub struct DeepSeekClient {
     http: reqwest::Client,
     config: Config,
@@ -131,17 +151,37 @@ impl DeepSeekClient {
         })
     }
 
+    pub async fn balance(&self) -> Result<Balance> {
+        self.get_json("/user/balance").await
+    }
+
     async fn post_json<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
+        let body = serde_json::to_value(body).context("failed to encode the request body")?;
+        self.request_json(reqwest::Method::POST, path, Some(body))
+            .await
+    }
+
+    async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        self.request_json(reqwest::Method::GET, path, None).await
+    }
+
+    async fn request_json<T: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<T> {
         let url = format!("{}{}", self.config.base_url.trim_end_matches('/'), path);
 
         for attempt in 1..=MAX_ATTEMPTS {
-            let result = self
+            let mut request = self
                 .http
-                .post(&url)
-                .bearer_auth(&self.api_key)
-                .json(body)
-                .send()
-                .await;
+                .request(method.clone(), &url)
+                .bearer_auth(&self.api_key);
+            if let Some(body) = &body {
+                request = request.json(body);
+            }
+            let result = request.send().await;
 
             let response = match result {
                 Ok(response) => response,
@@ -152,7 +192,7 @@ impl DeepSeekClient {
                     }
                     if err.is_timeout() {
                         return Err(err).context(format!(
-                            "the DeepSeek API did not respond within {}s (timeout_s); for fetch this usually means the target page could not be fetched",
+                            "the DeepSeek API did not respond within {}s (timeout_s)",
                             self.config.timeout_s
                         ));
                     }
@@ -256,7 +296,9 @@ fn map_error(status: StatusCode, info: &ErrorInfo) -> String {
         StatusCode::FORBIDDEN => {
             format!("request rejected by security policy (403){code}: {detail}")
         }
-        StatusCode::NOT_FOUND => format!("no usable content at this URL (404){code}: {detail}"),
+        StatusCode::NOT_FOUND => {
+            format!("endpoint not found or no usable content at this URL (404){code}: {detail}")
+        }
         StatusCode::TOO_MANY_REQUESTS => {
             format!("rate limited after {MAX_ATTEMPTS} attempts (429){code}: {detail}")
         }
@@ -275,17 +317,38 @@ where
     Ok(value.filter(|text| !text.trim().is_empty()))
 }
 
+// The official API sends amounts as strings, but compatible gateways send numbers.
+fn string_or_number<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNumber {
+        String(String),
+        Number(serde_json::Number),
+    }
+
+    let value: Option<StringOrNumber> = Option::deserialize(deserializer)?;
+    Ok(match value {
+        Some(StringOrNumber::String(text)) => text,
+        Some(StringOrNumber::Number(number)) => number.to_string(),
+        None => String::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     struct MockServer {
         base_url: String,
         hits: Arc<AtomicUsize>,
+        request_lines: Arc<Mutex<Vec<String>>>,
     }
 
     impl MockServer {
@@ -294,6 +357,8 @@ mod tests {
             let port = listener.local_addr().unwrap().port();
             let hits = Arc::new(AtomicUsize::new(0));
             let thread_hits = hits.clone();
+            let request_lines = Arc::new(Mutex::new(Vec::new()));
+            let thread_lines = request_lines.clone();
 
             std::thread::spawn(move || {
                 for (status, body) in responses {
@@ -304,12 +369,17 @@ mod tests {
 
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     let mut line = String::new();
+                    let mut first_line = true;
                     loop {
                         line.clear();
                         match reader.read_line(&mut line) {
                             Ok(0) | Err(_) => break,
                             Ok(_) if line.trim().is_empty() => break,
-                            Ok(_) => {}
+                            Ok(_) => {
+                                if std::mem::take(&mut first_line) {
+                                    thread_lines.lock().unwrap().push(line.trim().to_string());
+                                }
+                            }
                         }
                     }
 
@@ -326,6 +396,7 @@ mod tests {
             Self {
                 base_url: format!("http://127.0.0.1:{port}"),
                 hits,
+                request_lines,
             }
         }
 
@@ -334,6 +405,7 @@ mod tests {
             let port = listener.local_addr().unwrap().port();
             let hits = Arc::new(AtomicUsize::new(0));
             let thread_hits = hits.clone();
+            let request_lines = Arc::new(Mutex::new(Vec::new()));
 
             std::thread::spawn(move || {
                 while let Ok((stream, _)) = listener.accept() {
@@ -356,6 +428,7 @@ mod tests {
             Self {
                 base_url: format!("http://127.0.0.1:{port}"),
                 hits,
+                request_lines,
             }
         }
 
@@ -375,6 +448,10 @@ mod tests {
 
         fn hits(&self) -> usize {
             self.hits.load(Ordering::SeqCst)
+        }
+
+        fn request_lines(&self) -> Vec<String> {
+            self.request_lines.lock().unwrap().clone()
         }
     }
 
@@ -509,5 +586,69 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("no usable content"));
         assert!(err.to_string().contains("invalid_request_error"));
+    }
+
+    #[tokio::test]
+    async fn balance_maps_infos() {
+        let server = MockServer::serve(vec![(
+            "200 OK",
+            r#"{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"93.80","granted_balance":"0.00","topped_up_balance":"93.80"}]}"#,
+        )]);
+
+        let balance = server.client().balance().await.unwrap();
+        assert!(balance.is_available);
+        assert_eq!(balance.balance_infos.len(), 1);
+        let info = &balance.balance_infos[0];
+        assert_eq!(info.currency, "CNY");
+        assert_eq!(info.total_balance, "93.80");
+        assert_eq!(info.granted_balance, "0.00");
+        assert_eq!(info.topped_up_balance, "93.80");
+        assert_eq!(server.request_lines()[0], "GET /user/balance HTTP/1.1");
+    }
+
+    #[tokio::test]
+    async fn balance_accepts_numeric_amounts() {
+        let server = MockServer::serve(vec![(
+            "200 OK",
+            r#"{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":93.5,"granted_balance":0,"topped_up_balance":93.5}]}"#,
+        )]);
+
+        let balance = server.client().balance().await.unwrap();
+        let info = &balance.balance_infos[0];
+        assert_eq!(info.total_balance, "93.5");
+        assert_eq!(info.granted_balance, "0");
+        assert_eq!(info.topped_up_balance, "93.5");
+    }
+
+    #[tokio::test]
+    async fn balance_tolerates_missing_and_null_fields() {
+        let server = MockServer::serve(vec![
+            (
+                "200 OK",
+                r#"{"is_available":false,"balance_infos":[{"currency":"CNY","total_balance":null}]}"#,
+            ),
+            ("200 OK", r#"{"is_available":true}"#),
+        ]);
+
+        let with_null = server.client().balance().await.unwrap();
+        assert!(!with_null.is_available);
+        assert_eq!(with_null.balance_infos.len(), 1);
+        assert_eq!(with_null.balance_infos[0].total_balance, "");
+        assert_eq!(with_null.balance_infos[0].granted_balance, "");
+
+        let without_infos = server.client().balance().await.unwrap();
+        assert!(without_infos.balance_infos.is_empty());
+    }
+
+    #[tokio::test]
+    async fn balance_maps_401_to_auth_error() {
+        let server = MockServer::serve(vec![(
+            "401 Unauthorized",
+            r#"{"error":{"message":"invalid key"}}"#,
+        )]);
+
+        let err = server.client().balance().await.unwrap_err();
+        assert!(err.to_string().contains("authentication failed"));
+        assert_eq!(server.hits(), 1);
     }
 }
