@@ -23,12 +23,18 @@ git push github v0.1.0
 
 ## Layout
 
+- `src/main.rs` — entry point, dispatch and exit-code mapping (kept thin)
 - `src/cli.rs` — clap command surface
+- `src/commands.rs` — CLI subcommand implementations (search/fetch batch/balance/cache/usage/config/doctor)
 - `src/config.rs` — `config.toml` loading and platform paths
 - `src/credentials.rs` — encrypted credential file (machine-bound key)
-- `src/api.rs` — DeepSeek Search/Fetch/Balance client, retry and error mapping
+- `src/api.rs` — DeepSeek Search/Fetch/Balance client, retry, typed errors and error mapping
+- `src/cache.rs` — local response cache (24h TTL default), keyword-inspectable entries
+- `src/usage.rs` — local usage log and cost estimate
 - `src/mcp.rs` — stdio MCP server exposing `deepseek_search` / `deepseek_fetch` / `deepseek_balance`
-- `src/output.rs` — human-readable output and character truncation
+- `src/output.rs` — output rendering, truncation and `--output` file writing
+
+Keep files split by functional module; do not let any single file grow unwieldy.
 
 ## Rules
 

@@ -56,16 +56,6 @@ pub fn import_dotenv(dotenv: &Path, name: &str) -> Result<()> {
     store(&key)
 }
 
-pub fn show() -> Result<()> {
-    let path = path()?;
-    println!("credentials: {}", path.display());
-    match load_key() {
-        Ok(key) => println!("api key: {}", mask_key(&key)),
-        Err(err) => println!("api key: {err}"),
-    }
-    Ok(())
-}
-
 pub fn clear() -> Result<()> {
     let path = path()?;
     if path.exists() {
@@ -87,7 +77,12 @@ pub fn load_key() -> Result<String> {
 
     let path = path()?;
     if !path.exists() {
-        bail!("no API key configured; run `seekfetch config set-key`");
+        bail!(
+            "no API key configured; set one first:\n  \
+             seekfetch config set-key                   (interactive prompt, or pipe via stdin)\n  \
+             seekfetch config import --dotenv <FILE>    (import from a dotenv file)\n  \
+             or export DEEPSEEK_API_KEY=YOUR_API_KEY    (environment override)"
+        );
     }
 
     let text = std::fs::read_to_string(&path)
@@ -194,7 +189,7 @@ fn normalize_key(raw: &str) -> Result<String> {
     Ok(key.to_string())
 }
 
-fn mask_key(key: &str) -> String {
+pub fn mask_key(key: &str) -> String {
     let chars: Vec<char> = key.chars().collect();
     if chars.len() <= 8 {
         return "****".to_string();

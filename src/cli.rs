@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Debug, Parser)]
 #[command(name = "seekfetch", version, about)]
@@ -16,11 +17,12 @@ pub enum Command {
 
     /// Search the web through the DeepSeek Search API
     Search {
-        /// Query text; DeepSeek operators such as site:, after: and quotes are supported
-        query: String,
+        /// Query text; DeepSeek operators such as site:, after: and quotes are supported.
+        /// Reads from stdin when omitted and stdin is piped
+        query: Option<String>,
 
         /// Maximum number of results (1-50)
-        #[arg(short, long, default_value_t = 10)]
+        #[arg(short, long, default_value_t = 10, value_parser = clap::value_parser!(u8).range(1..=50))]
         count: u8,
 
         /// Include each result's page content
@@ -34,19 +36,60 @@ pub enum Command {
         /// Print the structured JSON payload instead of a human-readable list
         #[arg(long)]
         json: bool,
+
+        /// Keep only results with a rerank score of at least this value
+        #[arg(long, value_name = "SCORE")]
+        min_rerank: Option<f64>,
+
+        /// Keep only results with an authority of at least this value
+        #[arg(long, value_name = "LEVEL")]
+        min_authority: Option<i64>,
+
+        /// Keep only results from this domain (repeatable; matches subdomains)
+        #[arg(long, value_name = "DOMAIN")]
+        domain: Vec<String>,
+
+        /// Bypass the local cache for this request
+        #[arg(long)]
+        no_cache: bool,
+
+        /// Force a fresh request and overwrite the cached entry
+        #[arg(long, conflicts_with = "no_cache")]
+        refresh: bool,
+
+        /// Write the output to this file instead of stdout
+        #[arg(short, long, value_name = "PATH")]
+        output: Option<PathBuf>,
     },
 
-    /// Fetch a URL through the DeepSeek Fetch API
+    /// Fetch one or more URLs through the DeepSeek Fetch API
     Fetch {
-        url: String,
+        /// URLs to fetch; reads lines from stdin when omitted and stdin is piped
+        urls: Vec<String>,
 
-        /// Character cap for the fetched content
+        /// Read URLs from this file (one per line; blank lines and # comments ignored)
+        #[arg(long, value_name = "PATH")]
+        input: Option<PathBuf>,
+
+        /// Character cap for each fetched content
         #[arg(long, default_value_t = 20_000)]
         max_chars: usize,
 
         /// Print the structured JSON payload instead of plain text
         #[arg(long)]
         json: bool,
+
+        /// Bypass the local cache for this request
+        #[arg(long)]
+        no_cache: bool,
+
+        /// Force a fresh request and overwrite the cached entry
+        #[arg(long, conflicts_with = "no_cache")]
+        refresh: bool,
+
+        /// Write the output to this file instead of stdout
+        #[arg(short, long, value_name = "PATH")]
+        output: Option<PathBuf>,
     },
 
     /// Show the DeepSeek account balance
@@ -54,6 +97,29 @@ pub enum Command {
         /// Print the structured JSON payload instead of a human-readable summary
         #[arg(long)]
         json: bool,
+
+        /// Write the output to this file instead of stdout
+        #[arg(short, long, value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
+
+    /// Manage the local response cache
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
+
+    /// Show local API usage statistics and the estimated cost
+    Usage {
+        /// Print the structured JSON payload instead of a human-readable summary
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Print shell completions to stdout
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
     },
 
     /// Manage configuration and credentials
@@ -64,6 +130,34 @@ pub enum Command {
 
     /// Diagnose configuration, credentials and connectivity
     Doctor,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CacheCommand {
+    /// Show entry count, size on disk and expiry status
+    Stats,
+
+    /// Delete all cached entries
+    Clear,
+
+    /// Print the cache directory path
+    Path,
+
+    /// List cached requests, optionally filtered by a keyword
+    List {
+        /// Case-insensitive substring matched against the cached query or URL
+        keyword: Option<String>,
+    },
+
+    /// Show the cached response payload of entries matching a keyword
+    Show {
+        /// Case-insensitive substring matched against the cached query or URL
+        keyword: String,
+
+        /// Character cap for each entry's payload preview
+        #[arg(long, default_value_t = 2_000)]
+        max_chars: usize,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -90,8 +184,11 @@ pub enum ConfigCommand {
         name: String,
     },
 
-    /// Show the credential path and a masked key
+    /// Show paths, the effective configuration and a masked key
     Show,
+
+    /// Print the configuration and credential file paths
+    Path,
 
     /// Delete the stored credential
     Clear,

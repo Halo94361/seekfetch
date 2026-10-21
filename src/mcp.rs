@@ -1,11 +1,16 @@
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use crate::api::DeepSeekClient;
+use crate::api::{DeepSeekClient, SearchFilter};
+use crate::cache::{self, Cache, Cached};
 use crate::config::Config;
+use crate::usage;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const FETCH_DEFAULT_MAX_CHARS: usize = 20_000;
+/// Batch fetches through MCP are capped so a single call cannot run away
+/// with the (billed) API quota.
+const MAX_BATCH_URLS: usize = 20;
 
 pub async fn run() -> Result<()> {
     use std::io::{BufRead, Write};
@@ -138,13 +143,35 @@ fn tool_definitions(config: &Config) -> Value {
                         "default": config.default_max_chars,
                         "description": "Per-result character cap for summary and content",
                     },
+                    "min_rerank": {
+                        "type": "number",
+                        "description": "Keep only results with a rerank score of at least this value",
+                    },
+                    "min_authority": {
+                        "type": "integer",
+                        "description": "Keep only results with an authority of at least this value",
+                    },
+                    "domain": {
+                        "type": "string",
+                        "description": "Keep only results from this domain and its subdomains",
+                    },
+                    "no_cache": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Bypass the local response cache for this call",
+                    },
+                    "refresh": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Force a fresh request and overwrite the cached entry",
+                    },
                 },
                 "required": ["query"],
             },
         },
         {
             "name": "deepseek_fetch",
-            "description": "Fetch a web page through the DeepSeek Fetch API and return it as Markdown.",
+            "description": "Fetch one or more web pages through the DeepSeek Fetch API and return them as Markdown. Pass either `url` or `urls`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -152,13 +179,28 @@ fn tool_definitions(config: &Config) -> Value {
                         "type": "string",
                         "description": "HTTP/HTTPS URL to fetch",
                     },
+                    "urls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": MAX_BATCH_URLS,
+                        "description": "Batch mode: URLs to fetch sequentially; failures are reported per URL and do not abort the batch",
+                    },
                     "max_chars": {
                         "type": "integer",
                         "default": FETCH_DEFAULT_MAX_CHARS,
-                        "description": "Character cap for the returned content",
+                        "description": "Character cap for each returned content",
+                    },
+                    "no_cache": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Bypass the local response cache for this call",
+                    },
+                    "refresh": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Force a fresh request and overwrite the cached entry",
                     },
                 },
-                "required": ["url"],
             },
         },
         {
@@ -195,23 +237,77 @@ async fn call_tool(params: Value, config: &Config) -> Result<Value, McpError> {
                     as usize;
             let count = u8::try_from(count.clamp(1, 50))
                 .map_err(|_| McpError::invalid_params("`count` must be between 1 and 50"))?;
+            let filter = SearchFilter {
+                min_rerank: arguments.get("min_rerank").and_then(Value::as_f64),
+                min_authority: arguments.get("min_authority").and_then(Value::as_i64),
+                domains: arguments
+                    .get("domain")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .into_iter()
+                    .collect(),
+            };
+            let mode = cache_mode_argument(&arguments);
 
-            match run_search(&query, count, need_content, max_chars).await {
+            match run_search(
+                config,
+                &query,
+                count,
+                need_content,
+                max_chars,
+                &filter,
+                mode,
+            )
+            .await
+            {
                 Ok(output) => Ok(tool_success(output)),
                 Err(err) => Ok(tool_error_result(err)),
             }
         }
         "deepseek_fetch" => {
-            let url = string_argument(&arguments, "url")?;
             let max_chars =
                 integer_argument(&arguments, "max_chars", FETCH_DEFAULT_MAX_CHARS as u64)? as usize;
+            let mode = cache_mode_argument(&arguments);
+            let url = arguments
+                .get("url")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let urls = urls_argument(&arguments)?;
 
-            match run_fetch(&url, max_chars).await {
-                Ok(output) => Ok(tool_success(output)),
-                Err(err) => Ok(tool_error_result(err)),
+            match (url, urls) {
+                (Some(url), None) => match run_fetch(config, &url, max_chars, mode).await {
+                    Ok(output) => Ok(tool_success(output)),
+                    Err(err) => Ok(tool_error_result(err)),
+                },
+                (None, Some(urls)) => {
+                    if urls.is_empty() {
+                        return Err(McpError::invalid_params("`urls` must not be empty"));
+                    }
+                    if urls.len() > MAX_BATCH_URLS {
+                        return Err(McpError::invalid_params(format!(
+                            "`urls` accepts at most {MAX_BATCH_URLS} URLs"
+                        )));
+                    }
+                    // Sequential on purpose: the API allows 5 QPS and batch
+                    // failures must not abort the rest of the list.
+                    let mut outputs = Vec::with_capacity(urls.len());
+                    for url in urls {
+                        match run_fetch(config, &url, max_chars, mode).await {
+                            Ok(output) => outputs.push(output),
+                            Err(err) => outputs.push(json!({
+                                "url": url,
+                                "error": format!("{err:#}"),
+                            })),
+                        }
+                    }
+                    Ok(tool_success(Value::Array(outputs)))
+                }
+                _ => Err(McpError::invalid_params(
+                    "provide exactly one of `url` or `urls`",
+                )),
             }
         }
-        "deepseek_balance" => match run_balance().await {
+        "deepseek_balance" => match run_balance(config).await {
             Ok(output) => Ok(tool_success(output)),
             Err(err) => Ok(tool_error_result(err)),
         },
@@ -240,15 +336,71 @@ fn integer_argument(arguments: &Value, name: &str, default: u64) -> Result<u64, 
     }
 }
 
-async fn run_search(query: &str, count: u8, need_content: bool, max_chars: usize) -> Result<Value> {
+fn cache_mode_argument(arguments: &Value) -> cache::CacheMode {
+    cache::CacheMode::from_flags(
+        arguments
+            .get("no_cache")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        arguments
+            .get("refresh")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    )
+}
+
+fn urls_argument(arguments: &Value) -> Result<Option<Vec<String>>, McpError> {
+    match arguments.get("urls") {
+        None => Ok(None),
+        Some(Value::Array(items)) => {
+            let mut urls = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(url) = item.as_str() else {
+                    return Err(McpError::invalid_params("`urls` items must be strings"));
+                };
+                let url = url.trim();
+                if url.is_empty() {
+                    return Err(McpError::invalid_params("`urls` items must not be empty"));
+                }
+                urls.push(url.to_string());
+            }
+            Ok(Some(urls))
+        }
+        Some(_) => Err(McpError::invalid_params(
+            "`urls` must be an array of strings",
+        )),
+    }
+}
+
+async fn run_search(
+    config: &Config,
+    query: &str,
+    count: u8,
+    need_content: bool,
+    max_chars: usize,
+    filter: &SearchFilter,
+    mode: cache::CacheMode,
+) -> Result<Value> {
     let client = DeepSeekClient::from_config()?;
-    let results = client.search(query, count, need_content).await?;
+    let cache = Cache::from_config(client.config());
+    let outcome = cache::search(&client, cache.as_ref(), query, count, need_content, mode).await;
+    record_usage(config, usage::KIND_SEARCH, &outcome);
+    let mut results = outcome?.value;
+    filter.apply(&mut results);
     Ok(search_output(&results, max_chars))
 }
 
-async fn run_fetch(url: &str, max_chars: usize) -> Result<Value> {
+async fn run_fetch(
+    config: &Config,
+    url: &str,
+    max_chars: usize,
+    mode: cache::CacheMode,
+) -> Result<Value> {
     let client = DeepSeekClient::from_config()?;
-    let page = client.fetch(url).await?;
+    let cache = Cache::from_config(client.config());
+    let outcome = cache::fetch(&client, cache.as_ref(), url, mode).await;
+    record_usage(config, usage::KIND_FETCH, &outcome);
+    let page = outcome?.value;
     Ok(fetch_output(
         &page.title,
         &page.url,
@@ -257,10 +409,21 @@ async fn run_fetch(url: &str, max_chars: usize) -> Result<Value> {
     ))
 }
 
-async fn run_balance() -> Result<Value> {
+async fn run_balance(config: &Config) -> Result<Value> {
     let client = DeepSeekClient::from_config()?;
-    let balance = client.balance().await?;
+    let result = client.balance().await;
+    usage::record(config, usage::KIND_BALANCE, result.is_ok(), false);
+    let balance = result?;
     Ok(serde_json::to_value(balance)?)
+}
+
+fn record_usage<T>(config: &Config, kind: &str, outcome: &Result<Cached<T>>) {
+    usage::record(
+        config,
+        kind,
+        outcome.is_ok(),
+        outcome.as_ref().map(|o| o.from_cache).unwrap_or(false),
+    );
 }
 
 fn tool_success(output: Value) -> Value {
@@ -393,6 +556,59 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.code, -32602);
         assert!(error.message.contains("query"));
+    }
+
+    #[tokio::test]
+    async fn fetch_requires_exactly_one_of_url_or_urls() {
+        for arguments in [
+            json!({}),
+            json!({"url": "https://a.example", "urls": ["https://b.example"]}),
+        ] {
+            let error = dispatch(
+                "tools/call",
+                json!({"name": "deepseek_fetch", "arguments": arguments}),
+                &Config::default(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, -32602);
+            assert!(error.message.contains("url"));
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_bad_urls_argument() {
+        for arguments in [
+            json!({"urls": "https://a.example"}),
+            json!({"urls": ["https://a.example", 42]}),
+            json!({"urls": ["  "]}),
+            json!({"urls": []}),
+        ] {
+            let error = dispatch(
+                "tools/call",
+                json!({"name": "deepseek_fetch", "arguments": arguments}),
+                &Config::default(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, -32602, "arguments: {arguments}");
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_oversized_batch() {
+        let urls: Vec<String> = (0..MAX_BATCH_URLS + 1)
+            .map(|i| format!("https://{i}.example"))
+            .collect();
+        let error = dispatch(
+            "tools/call",
+            json!({"name": "deepseek_fetch", "arguments": {"urls": urls}}),
+            &Config::default(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, -32602);
+        assert!(error.message.contains("at most"));
     }
 
     #[tokio::test]

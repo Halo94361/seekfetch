@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use reqwest::StatusCode;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -64,6 +64,44 @@ pub struct BalanceInfo {
     pub topped_up_balance: String,
 }
 
+/// Classifies an API failure; drives the CLI exit code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    Network,
+    Timeout,
+    Auth,
+    Payment,
+    RateLimited,
+    Api,
+}
+
+#[derive(Debug)]
+pub struct ApiError {
+    kind: ErrorKind,
+    message: String,
+}
+
+impl ApiError {
+    fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
 pub struct DeepSeekClient {
     http: reqwest::Client,
     config: Config,
@@ -75,6 +113,10 @@ impl DeepSeekClient {
         let config = Config::load()?;
         let api_key = credentials::load_key()?;
         Self::new(config, api_key)
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 
     pub fn new(config: Config, api_key: String) -> Result<Self> {
@@ -191,32 +233,43 @@ impl DeepSeekClient {
                         continue;
                     }
                     if err.is_timeout() {
-                        return Err(err).context(format!(
-                            "the DeepSeek API did not respond within {}s (timeout_s)",
-                            self.config.timeout_s
-                        ));
+                        return Err(ApiError::new(
+                            ErrorKind::Timeout,
+                            format!(
+                                "the DeepSeek API did not respond within {}s (timeout_s)",
+                                self.config.timeout_s
+                            ),
+                        )
+                        .into());
                     }
-                    return Err(err).context("failed to reach the DeepSeek API");
+                    return Err(ApiError::new(
+                        ErrorKind::Network,
+                        format!("failed to reach the DeepSeek API: {err}"),
+                    )
+                    .into());
                 }
             };
 
             let status = response.status();
             if status.is_success() {
-                return response
-                    .json()
-                    .await
-                    .context("failed to decode the DeepSeek API response");
+                return response.json().await.map_err(|err| {
+                    anyhow::Error::new(ApiError::new(
+                        ErrorKind::Api,
+                        format!("failed to decode the DeepSeek API response: {err}"),
+                    ))
+                });
             }
 
-            let detail = error_detail(response).await;
+            let detail = error_detail(response, &self.api_key).await;
             if attempt < MAX_ATTEMPTS && is_retryable_status(status) {
                 backoff(attempt).await;
                 continue;
             }
-            bail!(map_error(status, &detail));
+            let (kind, message) = map_error(status, &detail);
+            return Err(ApiError::new(kind, message).into());
         }
 
-        unreachable!("the loop always returns or bails")
+        unreachable!("the loop always returns")
     }
 }
 
@@ -242,7 +295,7 @@ struct ErrorInfo {
     code: Option<String>,
 }
 
-async fn error_detail(response: reqwest::Response) -> ErrorInfo {
+async fn error_detail(response: reqwest::Response, api_key: &str) -> ErrorInfo {
     #[derive(Deserialize)]
     struct ErrorBody {
         error: ErrorDetail,
@@ -256,6 +309,7 @@ async fn error_detail(response: reqwest::Response) -> ErrorInfo {
     }
 
     let text = response.text().await.unwrap_or_default();
+    let text = scrub_secrets(&text, api_key);
     match serde_json::from_str::<ErrorBody>(&text) {
         Ok(body) => ErrorInfo {
             message: body.error.message,
@@ -280,32 +334,41 @@ async fn error_detail(response: reqwest::Response) -> ErrorInfo {
     }
 }
 
-fn map_error(status: StatusCode, info: &ErrorInfo) -> String {
+fn map_error(status: StatusCode, info: &ErrorInfo) -> (ErrorKind, String) {
     let code = match &info.code {
         Some(code) => format!(" [{code}]"),
         None => String::new(),
     };
     let detail = &info.message;
     match status {
-        StatusCode::UNAUTHORIZED => {
-            format!("authentication failed (401){code}: {detail}; check the API key")
-        }
-        StatusCode::PAYMENT_REQUIRED => {
-            format!("insufficient DeepSeek balance (402){code}: {detail}; top up the account")
-        }
-        StatusCode::FORBIDDEN => {
-            format!("request rejected by security policy (403){code}: {detail}")
-        }
-        StatusCode::NOT_FOUND => {
-            format!("endpoint not found or no usable content at this URL (404){code}: {detail}")
-        }
-        StatusCode::TOO_MANY_REQUESTS => {
-            format!("rate limited after {MAX_ATTEMPTS} attempts (429){code}: {detail}")
-        }
-        StatusCode::GATEWAY_TIMEOUT => {
-            format!("the target page did not answer in time (504 gateway timeout){code}: {detail}")
-        }
-        _ => format!("DeepSeek API error ({status}){code}: {detail}"),
+        StatusCode::UNAUTHORIZED => (
+            ErrorKind::Auth,
+            format!("authentication failed (401){code}: {detail}; check the API key"),
+        ),
+        StatusCode::PAYMENT_REQUIRED => (
+            ErrorKind::Payment,
+            format!("insufficient DeepSeek balance (402){code}: {detail}; top up the account"),
+        ),
+        StatusCode::FORBIDDEN => (
+            ErrorKind::Auth,
+            format!("request rejected by security policy (403){code}: {detail}"),
+        ),
+        StatusCode::NOT_FOUND => (
+            ErrorKind::Api,
+            format!("endpoint not found or no usable content at this URL (404){code}: {detail}"),
+        ),
+        StatusCode::TOO_MANY_REQUESTS => (
+            ErrorKind::RateLimited,
+            format!("rate limited after {MAX_ATTEMPTS} attempts (429){code}: {detail}"),
+        ),
+        StatusCode::GATEWAY_TIMEOUT => (
+            ErrorKind::Api,
+            format!("the target page did not answer in time (504 gateway timeout){code}: {detail}"),
+        ),
+        _ => (
+            ErrorKind::Api,
+            format!("DeepSeek API error ({status}){code}: {detail}"),
+        ),
     }
 }
 
@@ -335,6 +398,98 @@ where
         Some(StringOrNumber::Number(number)) => number.to_string(),
         None => String::new(),
     })
+}
+
+/// Strip credentials from text surfaced by the API before it reaches users or
+/// logs: the configured key itself, plus anything shaped like an `sk-…` token.
+pub fn scrub_secrets(text: &str, api_key: &str) -> String {
+    let text = if api_key.chars().count() >= 8 {
+        text.replace(api_key, "***")
+    } else {
+        text.to_string()
+    };
+    scrub_sk_tokens(&text)
+}
+
+fn scrub_sk_tokens(text: &str) -> String {
+    const MIN_TOKEN_LEN: usize = 16;
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(pos) = rest.find("sk-") {
+        let tail = &rest[pos + 3..];
+        let run = tail
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric())
+            .count();
+        if run >= MIN_TOKEN_LEN {
+            out.push_str(&rest[..pos]);
+            out.push_str("sk-***");
+            rest = &tail[run..];
+        } else {
+            out.push_str(&rest[..pos + 3]);
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Post-filter for search results (`--min-rerank`, `--min-authority`, `--domain`).
+#[derive(Debug, Default, Clone)]
+pub struct SearchFilter {
+    pub min_rerank: Option<f64>,
+    pub min_authority: Option<i64>,
+    pub domains: Vec<String>,
+}
+
+impl SearchFilter {
+    pub fn is_empty(&self) -> bool {
+        self.min_rerank.is_none() && self.min_authority.is_none() && self.domains.is_empty()
+    }
+
+    /// Drop non-matching results; returns how many were removed.
+    /// Results without a score fail a `--min-rerank`/`--min-authority` check.
+    pub fn apply(&self, results: &mut Vec<SearchResult>) -> usize {
+        let before = results.len();
+        results.retain(|item| self.matches(item));
+        before - results.len()
+    }
+
+    fn matches(&self, item: &SearchResult) -> bool {
+        if let Some(min) = self.min_rerank {
+            if item.rerank_score.unwrap_or(f64::NEG_INFINITY) < min {
+                return false;
+            }
+        }
+        if let Some(min) = self.min_authority {
+            if item.authority.unwrap_or(i64::MIN) < min {
+                return false;
+            }
+        }
+        if !self.domains.is_empty() {
+            let host = url_host(&item.url).to_lowercase();
+            let host = host.strip_prefix("www.").unwrap_or(&host);
+            let matched = self.domains.iter().any(|domain| {
+                let domain = domain.to_lowercase();
+                let domain = domain.strip_prefix("www.").unwrap_or(&domain);
+                host == domain || host.ends_with(&format!(".{domain}"))
+            });
+            if !matched {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Extract the host part of an http(s) URL, without userinfo or port.
+/// Search results are ordinary web URLs, so IPv6 literals are not handled.
+fn url_host(url: &str) -> &str {
+    let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    let without_user = authority.rsplit('@').next().unwrap_or(authority);
+    without_user.split(':').next().unwrap_or(without_user)
 }
 
 #[cfg(test)]
@@ -440,8 +595,7 @@ mod tests {
             let config = Config {
                 base_url: self.base_url.clone(),
                 timeout_s,
-                default_count: 10,
-                default_max_chars: 300,
+                ..Config::default()
             };
             DeepSeekClient::new(config, "sk-test".to_string()).unwrap()
         }
@@ -650,5 +804,97 @@ mod tests {
         let err = server.client().balance().await.unwrap_err();
         assert!(err.to_string().contains("authentication failed"));
         assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn error_detail_redacts_key_material() {
+        let server = MockServer::serve(vec![(
+            "400 Bad Request",
+            r#"{"error":{"message":"invalid key sk-0123456789abcdef0123456789abcdef provided"}}"#,
+        )]);
+
+        let err = server.client().search("q", 5, false).await.unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("sk-***"));
+        assert!(!message.contains("0123456789abcdef"));
+    }
+
+    #[test]
+    fn scrub_secrets_redacts_key_and_tokens() {
+        let key = "sk-abcdef0123456789abcdef0123456789";
+        let scrubbed = scrub_secrets(&format!("invalid key {key} for account"), key);
+        assert!(!scrubbed.contains(key));
+        assert!(scrubbed.contains("***"));
+
+        let other = scrub_secrets(
+            "token sk-0123456789abcdef0123456789abcdef rejected",
+            "sk-short",
+        );
+        assert_eq!(other, "token sk-*** rejected");
+
+        let untouched = scrub_secrets("sk-tooshort stays", "sk-x");
+        assert_eq!(untouched, "sk-tooshort stays");
+    }
+
+    #[test]
+    fn search_filter_applies_thresholds_and_domains() {
+        let make = |url: &str, rerank: Option<f64>, authority: Option<i64>| SearchResult {
+            title: "t".into(),
+            url: url.into(),
+            summary: None,
+            content: None,
+            snippet: None,
+            rerank_score: rerank,
+            authority,
+            site_name: None,
+            date: None,
+        };
+        let mut results = vec![
+            make("https://docs.example.com/a", Some(2.0), Some(3)),
+            make("https://other.org/b", Some(0.5), Some(1)),
+            make("https://example.com/c", None, None),
+        ];
+
+        let filter = SearchFilter {
+            min_rerank: Some(1.5),
+            min_authority: None,
+            domains: vec!["example.com".into()],
+        };
+        let removed = filter.apply(&mut results);
+        assert_eq!(removed, 2);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://docs.example.com/a");
+
+        let mut copy = results.clone();
+        assert_eq!(SearchFilter::default().apply(&mut copy), 0);
+        assert!(SearchFilter::default().is_empty());
+    }
+
+    #[test]
+    fn error_kind_maps_exit_categories() {
+        let (kind, _) = map_error(
+            StatusCode::UNAUTHORIZED,
+            &ErrorInfo {
+                message: "m".into(),
+                code: None,
+            },
+        );
+        assert_eq!(kind, ErrorKind::Auth);
+        let (kind, _) = map_error(
+            StatusCode::PAYMENT_REQUIRED,
+            &ErrorInfo {
+                message: "m".into(),
+                code: None,
+            },
+        );
+        assert_eq!(kind, ErrorKind::Payment);
+        let (kind, _) = map_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            &ErrorInfo {
+                message: "m".into(),
+                code: None,
+            },
+        );
+        assert_eq!(kind, ErrorKind::RateLimited);
     }
 }
