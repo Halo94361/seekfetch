@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -19,8 +20,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install mingw-w64 and zip
-        run: sudo apt-get update && sudo apt-get install -y mingw-w64 zip
+      - name: Install mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
 
       - name: Build Linux
         run: cargo build --release
@@ -28,13 +29,12 @@ jobs:
       - name: Build Windows (GNU)
         run: cargo build --release --target x86_64-pc-windows-gnu
 
-      - name: Package
+      - name: Collect binaries
         run: |
           mkdir -p dist
-          tar -czf "dist/seekfetch-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" \
-            -C target/release seekfetch
-          (cd target/x86_64-pc-windows-gnu/release && \
-            zip "../../../dist/seekfetch-${GITHUB_REF_NAME}-x86_64-pc-windows-gnu.zip" seekfetch.exe)
+          cp target/release/seekfetch "dist/seekfetch-${GITHUB_REF_NAME}-linux-x86_64"
+          cp target/x86_64-pc-windows-gnu/release/seekfetch.exe \
+            "dist/seekfetch-${GITHUB_REF_NAME}-windows-x86_64.exe"
           ls -lh dist
 
       - name: Create or update release

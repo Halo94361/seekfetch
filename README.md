@@ -24,8 +24,8 @@ Known server-side extraction behavior (observed, not configurable): HTML tables 
 
 Prebuilt binaries are attached to [GitHub Releases](https://github.com/Halo94361/seekfetch/releases):
 
-- `seekfetch-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
-- `seekfetch-vX.Y.Z-x86_64-pc-windows-gnu.zip`
+- `seekfetch-vX.Y.Z-linux-x86_64` (Linux)
+- `seekfetch-vX.Y.Z-windows-x86_64.exe` (Windows)
 
 Or build from source:
 

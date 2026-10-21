@@ -19,7 +19,7 @@ git push origin v0.1.0
 git push github v0.1.0
 ```
 
-`.github/workflows/release.yml` builds Linux and Windows GNU binaries and creates the GitHub release.
+`.github/workflows/release.yml` builds Linux and Windows GNU binaries and uploads them as plain files to the GitHub release (no archives).
 
 ## Layout
 
