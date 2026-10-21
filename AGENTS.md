@@ -1,6 +1,6 @@
-# seekfetch
+# seekfetch-rs
 
-Unofficial MCP server and CLI for DeepSeek Search/Fetch, written in Rust.
+Unofficial MCP server and CLI for DeepSeek Search/Fetch, written in Rust. The repository and Cargo package are named `seekfetch-rs`; the binary remains `seekfetch`.
 
 ## Build and test
 

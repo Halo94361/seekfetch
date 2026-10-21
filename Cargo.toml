@@ -1,14 +1,18 @@
 [package]
-name = "seekfetch"
+name = "seekfetch-rs"
 version = "0.4.0"
 edition = "2021"
 rust-version = "1.75"
-description = "Unofficial MCP server and CLI for DeepSeek Search/Fetch"
+description = "Unofficial MCP server and CLI for DeepSeek Search/Fetch, written in Rust"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/Halo94361/seekfetch"
-homepage = "https://github.com/Halo94361/seekfetch"
-keywords = ["mcp", "deepseek", "search", "cli"]
+repository = "https://github.com/Halo94361/seekfetch-rs"
+homepage = "https://github.com/Halo94361/seekfetch-rs"
+keywords = ["mcp", "deepseek", "search", "cli", "rust"]
 categories = ["command-line-utilities", "api-bindings"]
+
+[[bin]]
+name = "seekfetch"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"

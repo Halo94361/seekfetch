@@ -1,6 +1,6 @@
-# seekfetch
+# seekfetch-rs
 
-Unofficial MCP server and CLI for the [DeepSeek Search/Fetch API](https://api-docs.deepseek.com/zh-cn/guides/search), packaged as a single Rust binary.
+Unofficial MCP server and CLI for the [DeepSeek Search/Fetch API](https://api-docs.deepseek.com/zh-cn/guides/search), packaged as a single Rust binary. The repository and Cargo package are named `seekfetch-rs`; the installed binary remains `seekfetch`.
 
 The CLI, encrypted credential storage and the MCP server are fully implemented. `seekfetch doctor` verifies configuration, credentials and live API connectivity.
 
@@ -22,7 +22,7 @@ Known server-side extraction behavior (observed, not configurable): HTML tables 
 
 ## Install
 
-Prebuilt binaries are attached to [GitHub Releases](https://github.com/Halo94361/seekfetch/releases):
+Prebuilt binaries are attached to [GitHub Releases](https://github.com/Halo94361/seekfetch-rs/releases):
 
 - `seekfetch-vX.Y.Z-linux-x86_64` (Linux)
 - `seekfetch-vX.Y.Z-windows-x86_64.exe` (Windows)
