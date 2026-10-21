@@ -114,6 +114,18 @@ pub enum Command {
         /// Print the structured JSON payload instead of a human-readable summary
         #[arg(long)]
         json: bool,
+        /// Only include events on or after this UTC date (YYYY-MM-DD)
+        #[arg(long, value_name = "YYYY-MM-DD", conflicts_with = "last")]
+        since: Option<String>,
+        /// Only include events on or before this UTC date (inclusive)
+        #[arg(long, value_name = "YYYY-MM-DD", conflicts_with = "last")]
+        until: Option<String>,
+        /// Only include the last N days/weeks/months/years (e.g. 30d, 4w, 6m, 1y)
+        #[arg(long, value_name = "PERIOD", conflicts_with_all = ["since", "until"])]
+        last: Option<String>,
+        /// Group results by day, week or month
+        #[arg(long, value_enum)]
+        group_by: Option<crate::usage::GroupBy>,
     },
 
     /// Print shell completions to stdout

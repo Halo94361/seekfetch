@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,10 @@ fn default_count() -> u8 {
 
 fn default_max_chars() -> usize {
     300
+}
+
+fn default_min_interval_ms() -> u64 {
+    200
 }
 
 fn default_cache_enabled() -> bool {
@@ -90,6 +95,9 @@ pub struct Config {
     pub default_count: u8,
     #[serde(default = "default_max_chars")]
     pub default_max_chars: usize,
+    /// Minimum gap between API requests in this process. 0 disables the throttle.
+    #[serde(default = "default_min_interval_ms")]
+    pub min_interval_ms: u64,
     #[serde(default)]
     pub cache: CacheConfig,
     #[serde(default)]
@@ -103,6 +111,7 @@ impl Default for Config {
             timeout_s: default_timeout_s(),
             default_count: default_count(),
             default_max_chars: default_max_chars(),
+            min_interval_ms: default_min_interval_ms(),
             cache: CacheConfig::default(),
             usage: UsageConfig::default(),
         }
@@ -126,5 +135,30 @@ impl Config {
             .context("cannot locate the platform config directory")?
             .join("seekfetch");
         Ok(dir.join("config.toml"))
+    }
+
+    /// Minimum interval between API requests, or None when throttling is disabled.
+    pub fn min_interval(&self) -> Option<Duration> {
+        (self.min_interval_ms > 0).then(|| Duration::from_millis(self.min_interval_ms))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_min_interval_is_200ms() {
+        assert_eq!(
+            Config::default().min_interval(),
+            Some(Duration::from_millis(200))
+        );
+    }
+
+    #[test]
+    fn zero_min_interval_disables_throttle() {
+        let mut config = Config::default();
+        config.min_interval_ms = 0;
+        assert_eq!(config.min_interval(), None);
     }
 }

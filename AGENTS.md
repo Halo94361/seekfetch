@@ -30,7 +30,7 @@ git push github v0.1.0
 - `src/credentials.rs` — encrypted credential file (machine-bound key)
 - `src/api.rs` — DeepSeek Search/Fetch/Balance client, retry, typed errors and error mapping
 - `src/cache.rs` — local response cache (24h TTL default), keyword-inspectable entries
-- `src/usage.rs` — local usage log and cost estimate
+- `src/usage.rs` — local usage log, time filters and cost estimate
 - `src/mcp.rs` — stdio MCP server exposing `deepseek_search` / `deepseek_fetch` / `deepseek_balance`
 - `src/output.rs` — output rendering, truncation and `--output` file writing
 
@@ -42,6 +42,7 @@ Keep files split by functional module; do not let any single file grow unwieldy.
 - Credentials live in the platform config directory, never in this repository.
 - `DEEPSEEK_API_KEY` overrides the stored credential.
 - Keep MCP tool output truncated by default; a search result should not dump raw API JSON into the model context.
+- All DeepSeek API calls go through `DeepSeekClient::request_json`, which enforces the process-wide `min_interval_ms` throttle; cache hits bypass it. Do not add raw HTTP paths around it.
 - Never put credentials in source, config, tests, comments, docs, examples, logs, or commit messages. Runtime secrets come from environment variables or the encrypted credential file only.
 - Never put personal information in code, docs, examples, or commit metadata: real names, personal email addresses, phone numbers, home addresses, local usernames, or absolute paths such as `/home/<user>`.
 - Use placeholders in examples: `YOUR_API_KEY`, `/path/to/seekfetch`, `<user>`.

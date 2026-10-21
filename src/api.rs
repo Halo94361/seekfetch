@@ -1,4 +1,5 @@
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use reqwest::StatusCode;
@@ -9,6 +10,21 @@ use crate::credentials;
 
 const MAX_ATTEMPTS: u32 = 4;
 const RETRY_BASE_DELAY_MS: u64 = 500;
+
+static RATE_LIMITER: OnceLock<tokio::sync::Mutex<Instant>> = OnceLock::new();
+
+async fn throttle(min_interval: Option<Duration>) {
+    let Some(interval) = min_interval.filter(|interval| !interval.is_zero()) else {
+        return;
+    };
+    let limiter = RATE_LIMITER.get_or_init(|| tokio::sync::Mutex::new(Instant::now()));
+    let mut next_allowed = limiter.lock().await;
+    let now = Instant::now();
+    if *next_allowed > now {
+        tokio::time::sleep(*next_allowed - now).await;
+    }
+    *next_allowed = Instant::now() + interval;
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
@@ -216,6 +232,8 @@ impl DeepSeekClient {
         let url = format!("{}{}", self.config.base_url.trim_end_matches('/'), path);
 
         for attempt in 1..=MAX_ATTEMPTS {
+            throttle(self.config.min_interval()).await;
+
             let mut request = self
                 .http
                 .request(method.clone(), &url)
@@ -260,9 +278,15 @@ impl DeepSeekClient {
                 });
             }
 
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_retry_after);
             let detail = error_detail(response, &self.api_key).await;
             if attempt < MAX_ATTEMPTS && is_retryable_status(status) {
-                backoff(attempt).await;
+                let delay = retry_after.unwrap_or_else(|| backoff_delay(attempt));
+                tokio::time::sleep(delay).await;
                 continue;
             }
             let (kind, message) = map_error(status, &detail);
@@ -273,9 +297,16 @@ impl DeepSeekClient {
     }
 }
 
+fn backoff_delay(attempt: u32) -> Duration {
+    Duration::from_millis(RETRY_BASE_DELAY_MS.saturating_mul(1u64 << (attempt - 1)))
+}
+
 async fn backoff(attempt: u32) {
-    let delay = RETRY_BASE_DELAY_MS.saturating_mul(1u64 << (attempt - 1));
-    tokio::time::sleep(Duration::from_millis(delay)).await;
+    tokio::time::sleep(backoff_delay(attempt)).await;
+}
+
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    value.trim().parse::<u64>().ok().map(Duration::from_secs)
 }
 
 fn is_retryable_transport(err: &reqwest::Error) -> bool {
@@ -500,6 +531,35 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    #[test]
+    fn retry_after_parses_seconds() {
+        assert_eq!(parse_retry_after(" 5 "), Some(Duration::from_secs(5)));
+        assert_eq!(parse_retry_after("0"), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn retry_after_rejects_dates_and_garbage() {
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+        assert_eq!(parse_retry_after("-1"), None);
+        assert_eq!(parse_retry_after(""), None);
+    }
+
+    #[test]
+    fn backoff_delays_grow_exponentially() {
+        assert_eq!(backoff_delay(1), Duration::from_millis(500));
+        assert_eq!(backoff_delay(2), Duration::from_millis(1000));
+        assert_eq!(backoff_delay(3), Duration::from_millis(2000));
+    }
+
+    #[tokio::test]
+    async fn throttle_waits_between_calls() {
+        let interval = Duration::from_millis(40);
+        let start = Instant::now();
+        throttle(Some(interval)).await;
+        throttle(Some(interval)).await;
+        assert!(start.elapsed() >= interval);
+    }
+
     struct MockServer {
         base_url: String,
         hits: Arc<AtomicUsize>,
@@ -595,6 +655,7 @@ mod tests {
             let config = Config {
                 base_url: self.base_url.clone(),
                 timeout_s,
+                min_interval_ms: 0,
                 ..Config::default()
             };
             DeepSeekClient::new(config, "sk-test".to_string()).unwrap()

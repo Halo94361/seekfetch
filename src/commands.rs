@@ -162,9 +162,18 @@ pub fn cache_command(command: &CacheCommand) -> Result<i32> {
     Ok(0)
 }
 
-pub fn usage_command(json: bool) -> Result<i32> {
-    let summary = usage::summarize()?;
-    let text = usage::render(&summary, json)?;
+pub fn usage_command(
+    json: bool,
+    since: Option<&str>,
+    until: Option<&str>,
+    last: Option<&str>,
+    group_by: Option<usage::GroupBy>,
+) -> Result<i32> {
+    let filter = usage::TimeFilter::from_args(since, until, last)?;
+    let text = match group_by {
+        Some(group_by) => usage::render_buckets(&usage::summarize_by(filter, group_by)?, json)?,
+        None => usage::render(&usage::summarize_filtered(filter)?, json)?,
+    };
     print!("{text}");
     Ok(0)
 }

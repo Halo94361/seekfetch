@@ -1,5 +1,7 @@
 # seekfetch-rs
 
+**English** | [简体中文](README.zh-CN.md)
+
 Unofficial MCP server and CLI for the [DeepSeek Search/Fetch API](https://api-docs.deepseek.com/zh-cn/guides/search), packaged as a single Rust binary. The repository and Cargo package are named `seekfetch-rs`; the installed binary remains `seekfetch`.
 
 The CLI, encrypted credential storage and the MCP server are fully implemented. `seekfetch doctor` verifies configuration, credentials and live API connectivity.
@@ -8,7 +10,7 @@ The CLI, encrypted credential storage and the MCP server are fully implemented. 
 
 DeepSeek Search is currently driven by curl and prompt instructions. This wrapper keeps the API key out of prompts and command lines, turns the response into structured results, and exposes the same capability as an MCP tool with output truncation built in.
 
-This project is not affiliated with or endorsed by DeepSeek.
+Unofficial tool.
 
 ## Tools
 
@@ -110,7 +112,15 @@ Default location: `~/.cache/seekfetch` (Linux), `%LOCALAPPDATA%\seekfetch` (Wind
 
 ### Usage statistics
 
-Every search/fetch/balance call (CLI and MCP) is appended to `~/.local/share/seekfetch/usage.jsonl` (Linux). `seekfetch usage [--json]` aggregates the log: call counts, failures, cache hits (free), billable calls and the estimated cost at ¥5 per 1000 successful calls. Balance queries and cache hits are not billed; failed calls are not billed.
+Every search/fetch/balance call (CLI and MCP) is appended to `~/.local/share/seekfetch/usage.jsonl` (Linux). `seekfetch usage` aggregates the log: call counts, failures, cache hits (free), billable calls and the estimated cost at ¥5 per 1000 successful calls. Balance queries and cache hits are not billed; failed calls are not billed.
+
+`--since YYYY-MM-DD` / `--until YYYY-MM-DD` select a UTC date range (both ends inclusive); `--last 30d` selects a relative window (`d`, `w`, `m`, `y`; `m` = 30 days, `y` = 365 days). `--group-by day|week|month` reports per-bucket counts; weeks start on Monday. Buckets with no calls are omitted. With `--group-by`, `--json` returns an array of buckets instead of a single summary.
+
+```bash
+seekfetch usage --last 30d
+seekfetch usage --since 2026-09-01 --until 2026-09-30 --group-by day
+seekfetch usage --last 6m --group-by month --json
+```
 
 ### Exit codes
 
@@ -160,6 +170,7 @@ base_url = "https://api.deepseek.com"
 timeout_s = 35
 default_count = 10
 default_max_chars = 300
+min_interval_ms = 200   # process-wide API throttle; 0 disables
 
 [cache]
 enabled = true
@@ -169,6 +180,8 @@ ttl_s = 86400
 [usage]
 enabled = true
 ```
+
+`min_interval_ms` sets the minimum gap between API requests in the current process (default 200ms, i.e. 5 QPS). Cache hits are not throttled. Set it to 0 to disable the throttle.
 
 `seekfetch config show` prints the effective configuration with the masked key and its source.
 

@@ -71,7 +71,19 @@ async fn dispatch(command: Command) -> anyhow::Result<i32> {
         } => commands::fetch(urls, input, max_chars, json, no_cache, refresh, output).await,
         Command::Balance { json, output } => commands::balance(json, output).await,
         Command::Cache { command } => commands::cache_command(&command),
-        Command::Usage { json } => commands::usage_command(json),
+        Command::Usage {
+            json,
+            since,
+            until,
+            last,
+            group_by,
+        } => commands::usage_command(
+            json,
+            since.as_deref(),
+            until.as_deref(),
+            last.as_deref(),
+            group_by,
+        ),
         Command::Completions { shell } => commands::completions(shell),
         Command::Config { command } => match command {
             ConfigCommand::SetKey { stdin, from_env } => {
