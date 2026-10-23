@@ -98,7 +98,7 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+    pub(crate) fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
@@ -432,7 +432,8 @@ where
 }
 
 /// Strip credentials from text surfaced by the API before it reaches users or
-/// logs: the configured key itself, plus anything shaped like an `sk-…` token.
+/// logs: the configured key itself, plus anything shaped like `sk-…` or
+/// `oc_sk_…` token.
 pub fn scrub_secrets(text: &str, api_key: &str) -> String {
     let text = if api_key.chars().count() >= 8 {
         text.replace(api_key, "***")
@@ -443,21 +444,26 @@ pub fn scrub_secrets(text: &str, api_key: &str) -> String {
 }
 
 fn scrub_sk_tokens(text: &str) -> String {
+    let text = scrub_prefixed_token(text, "oc_sk_", "oc_sk_***");
+    scrub_prefixed_token(&text, "sk-", "sk-***")
+}
+
+fn scrub_prefixed_token(text: &str, prefix: &str, replacement: &str) -> String {
     const MIN_TOKEN_LEN: usize = 16;
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(pos) = rest.find("sk-") {
-        let tail = &rest[pos + 3..];
+    while let Some(pos) = rest.find(prefix) {
+        let tail = &rest[pos + prefix.len()..];
         let run = tail
             .bytes()
             .take_while(|b| b.is_ascii_alphanumeric())
             .count();
         if run >= MIN_TOKEN_LEN {
             out.push_str(&rest[..pos]);
-            out.push_str("sk-***");
+            out.push_str(replacement);
             rest = &tail[run..];
         } else {
-            out.push_str(&rest[..pos + 3]);
+            out.push_str(&rest[..pos + prefix.len()]);
             rest = tail;
         }
     }

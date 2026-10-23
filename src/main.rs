@@ -6,12 +6,13 @@ mod commands;
 mod config;
 mod credentials;
 mod mcp;
+mod opencode;
 mod output;
 mod usage;
 
 use clap::Parser;
 
-use cli::{Cli, Command, ConfigCommand};
+use cli::{Cli, Command, ConfigCommand, OpencodeCommand};
 
 #[tokio::main]
 async fn main() {
@@ -70,6 +71,14 @@ async fn dispatch(command: Command) -> anyhow::Result<i32> {
             output,
         } => commands::fetch(urls, input, max_chars, json, no_cache, refresh, output).await,
         Command::Balance { json, output } => commands::balance(json, output).await,
+        Command::Opencode {
+            json,
+            output,
+            command,
+        } => {
+            let command = command.unwrap_or(OpencodeCommand::Usage);
+            commands::opencode_command(json, output, command).await
+        }
         Command::Cache { command } => commands::cache_command(&command),
         Command::Usage {
             json,

@@ -7,9 +7,10 @@ use anyhow::{bail, Context, Result};
 
 use crate::api::{DeepSeekClient, SearchFilter};
 use crate::cache::{self, Cache, Cached};
-use crate::cli::CacheCommand;
+use crate::cli::{CacheCommand, OpencodeCommand};
 use crate::config::Config;
 use crate::credentials;
+use crate::opencode;
 use crate::output::{self, FetchPage};
 use crate::usage;
 
@@ -143,6 +144,50 @@ pub async fn balance(json: bool, output: Option<PathBuf>) -> Result<i32> {
     Ok(0)
 }
 
+pub async fn opencode_command(
+    json: bool,
+    output: Option<PathBuf>,
+    command: OpencodeCommand,
+) -> Result<i32> {
+    match command {
+        OpencodeCommand::Usage => opencode_usage(json, output).await,
+        OpencodeCommand::SetKey { stdin, from_env } => {
+            credentials::KeyStore::OPENCODE.set_key(stdin, from_env.as_deref())?;
+            Ok(0)
+        }
+        OpencodeCommand::Import { dotenv, name } => {
+            credentials::KeyStore::OPENCODE.import_dotenv(&dotenv, &name)?;
+            Ok(0)
+        }
+        OpencodeCommand::Show => opencode_show(),
+        OpencodeCommand::Path => {
+            println!("{}", credentials::KeyStore::OPENCODE.path()?.display());
+            Ok(0)
+        }
+        OpencodeCommand::Clear => {
+            credentials::KeyStore::OPENCODE.clear()?;
+            Ok(0)
+        }
+    }
+}
+
+async fn opencode_usage(json: bool, output: Option<PathBuf>) -> Result<i32> {
+    let client = opencode::Client::from_config()?;
+    let report = client.usage().await?;
+    let text = output::render_opencode_usage(&report, json)?;
+    output::emit(&text, output.as_deref())?;
+    Ok(0)
+}
+
+fn opencode_show() -> Result<i32> {
+    println!(
+        "credentials: {}",
+        credentials::KeyStore::OPENCODE.path()?.display()
+    );
+    println!("api key: {}", describe_key(credentials::KeyStore::OPENCODE));
+    Ok(0)
+}
+
 pub fn cache_command(command: &CacheCommand) -> Result<i32> {
     let config = Config::load()?;
     // Cache management works even when caching is disabled in the config.
@@ -189,6 +234,10 @@ pub fn completions(shell: clap_complete::Shell) -> Result<i32> {
 pub fn config_paths() -> Result<i32> {
     println!("config: {}", Config::path()?.display());
     println!("credentials: {}", credentials::path()?.display());
+    println!(
+        "opencode credentials: {}",
+        credentials::KeyStore::OPENCODE.path()?.display()
+    );
     Ok(0)
 }
 
@@ -211,21 +260,26 @@ pub fn show_config() -> Result<i32> {
         config.usage.enabled,
         display_path(usage::path())
     );
-    match credentials::load_key() {
+    println!("api key: {}", describe_key(credentials::KeyStore::DEEPSEEK));
+    println!(
+        "opencode api key: {}",
+        describe_key(credentials::KeyStore::OPENCODE)
+    );
+    Ok(0)
+}
+
+fn describe_key(store: credentials::KeyStore) -> String {
+    match store.load() {
         Ok(key) => {
-            let from_env = std::env::var(credentials::KEY_ENV)
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false);
-            let source = if from_env {
-                format!("environment {}", credentials::KEY_ENV)
+            let source = if store.env_key().is_some() {
+                format!("environment {}", store.env_var())
             } else {
                 "credential file".to_string()
             };
-            println!("api key: {} ({source})", credentials::mask_key(&key));
+            format!("{} ({source})", credentials::mask_key(&key))
         }
-        Err(err) => println!("api key: {err}"),
+        Err(err) => format!("{err}"),
     }
-    Ok(0)
 }
 
 pub async fn doctor() -> Result<i32> {

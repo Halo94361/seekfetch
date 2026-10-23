@@ -211,6 +211,14 @@ fn tool_definitions(config: &Config) -> Value {
                 "properties": {},
             },
         },
+        {
+            "name": "opencode_usage",
+            "description": "Show OpenCode Go quota usage. Returns the percentage used in the rolling (5-hour), weekly and monthly windows, plus each window's status and reset time.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+            },
+        },
     ])
 }
 
@@ -308,6 +316,10 @@ async fn call_tool(params: Value, config: &Config) -> Result<Value, McpError> {
             }
         }
         "deepseek_balance" => match run_balance(config).await {
+            Ok(output) => Ok(tool_success(output)),
+            Err(err) => Ok(tool_error_result(err)),
+        },
+        "opencode_usage" => match run_opencode_usage().await {
             Ok(output) => Ok(tool_success(output)),
             Err(err) => Ok(tool_error_result(err)),
         },
@@ -417,6 +429,12 @@ async fn run_balance(config: &Config) -> Result<Value> {
     Ok(serde_json::to_value(balance)?)
 }
 
+async fn run_opencode_usage() -> Result<Value> {
+    let client = crate::opencode::Client::from_config()?;
+    let report = client.usage().await?;
+    Ok(serde_json::to_value(report)?)
+}
+
 fn record_usage<T>(config: &Config, kind: &str, outcome: &Result<Cached<T>>) {
     usage::record(
         config,
@@ -521,7 +539,12 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["deepseek_search", "deepseek_fetch", "deepseek_balance"]
+            [
+                "deepseek_search",
+                "deepseek_fetch",
+                "deepseek_balance",
+                "opencode_usage"
+            ]
         );
     }
 

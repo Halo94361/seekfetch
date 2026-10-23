@@ -109,6 +109,22 @@ pub enum Command {
         command: CacheCommand,
     },
 
+    /// Query OpenCode Go usage windows and manage its encrypted key
+    #[command(visible_alias = "oc")]
+    Opencode {
+        /// Print the structured JSON payload instead of a human-readable summary
+        #[arg(long, global = true)]
+        json: bool,
+
+        /// Write the output to this file instead of stdout
+        #[arg(short, long, value_name = "PATH", global = true)]
+        output: Option<PathBuf>,
+
+        /// Defaults to `usage` when omitted
+        #[command(subcommand)]
+        command: Option<OpencodeCommand>,
+    },
+
     /// Show local API usage statistics and the estimated cost
     Usage {
         /// Print the structured JSON payload instead of a human-readable summary
@@ -170,6 +186,43 @@ pub enum CacheCommand {
         #[arg(long, default_value_t = 2_000)]
         max_chars: usize,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OpencodeCommand {
+    /// Show the rolling, weekly and monthly usage windows
+    Usage,
+
+    /// Store the OpenCode Go API key in the encrypted credential file
+    SetKey {
+        /// Read the key from stdin instead of prompting
+        #[arg(long)]
+        stdin: bool,
+
+        /// Read the key from this environment variable
+        #[arg(long, value_name = "NAME")]
+        from_env: Option<String>,
+    },
+
+    /// Import the OpenCode Go key from a dotenv-style file
+    Import {
+        /// Path to the dotenv file
+        #[arg(long, value_name = "PATH")]
+        dotenv: PathBuf,
+
+        /// Variable name to read from the file
+        #[arg(long, default_value = "OPENCODE_API_KEY")]
+        name: String,
+    },
+
+    /// Show the credential path and a masked key
+    Show,
+
+    /// Print the credential file path
+    Path,
+
+    /// Delete the stored OpenCode Go credential
+    Clear,
 }
 
 #[derive(Debug, Subcommand)]

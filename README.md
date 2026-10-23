@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Unofficial MCP server and CLI for the [DeepSeek Search/Fetch API](https://api-docs.deepseek.com/zh-cn/guides/search), packaged as a single Rust binary. The repository and Cargo package are named `seekfetch-rs`; the installed binary remains `seekfetch`.
+Unofficial MCP server and CLI for the [DeepSeek Search/Fetch API](https://api-docs.deepseek.com/zh-cn/guides/search), plus an OpenCode Go quota lookup, packaged as a single Rust binary. The repository and Cargo package are named `seekfetch-rs`; the installed binary remains `seekfetch`.
 
 The CLI, encrypted credential storage and the MCP server are fully implemented. `seekfetch doctor` verifies configuration, credentials and live API connectivity.
 
@@ -19,6 +19,7 @@ Unofficial tool.
 | `deepseek_search` | `query`, `count`, `need_content`, `max_chars`, `min_rerank`, `min_authority`, `domain`, `no_cache`, `refresh` | `title`, `url`, `summary`, optional `content`, `rerank_score`, `authority` |
 | `deepseek_fetch` | `url` or `urls` (batch, max 20), `max_chars`, `no_cache`, `refresh` | `title`, `url`, `content`, `truncated`; batch returns one entry per URL, failures inline |
 | `deepseek_balance` | — | `is_available`, `balance_infos` (`currency`, `total_balance`, `granted_balance`, `topped_up_balance`) |
+| `opencode_usage` | — | `usage.rolling` / `weekly` / `monthly`: `status`, `percent`, `resetsAt` |
 
 Known server-side extraction behavior (observed, not configurable): HTML tables are flattened into pipe-joined plain-text lines instead of Markdown tables, and content inside inactive tabs or otherwise hidden sections may be omitted entirely.
 
@@ -78,6 +79,8 @@ seekfetch fetch url1 url2 url3                        # batch: pages joined by -
 seekfetch fetch --input urls.txt --output pages.md    # one URL per line, # comments ok
 cat urls.txt | seekfetch fetch                        # batch from stdin
 seekfetch balance
+seekfetch opencode                                    # OpenCode Go quota windows
+seekfetch opencode --json                             # structured payload
 seekfetch usage                                       # call counts and estimated cost
 seekfetch cache list [keyword]                        # inspect cached requests
 seekfetch doctor
@@ -94,6 +97,28 @@ CNY
 ```
 
 Compatible gateways that do not implement the balance endpoint answer 404.
+
+### OpenCode Go usage
+
+`seekfetch opencode` queries the public OpenCode proxy (`GET https://opencode.ai/zen/go/v1/usage`) and prints the percentage used in each quota window:
+
+```
+rolling   7%  ok  resets 2026-10-23 10:53 UTC
+weekly    3%  ok  resets 2026-10-26 00:00 UTC
+monthly   1%  ok  resets 2026-11-23 05:35 UTC
+```
+
+The upstream route reports only these three percentages — no per-model or per-day breakdown, token counts, cost or plan name. Local session proxies do not forward the route, so the request always goes to `opencode.ai`. `--json` prints the structured payload and `--output` writes it to a file. Results are not cached, since quotas change continuously.
+
+The OpenCode Go key uses its own encrypted file (`credentials-opencode`); `OPENCODE_API_KEY` overrides it:
+
+```bash
+seekfetch opencode set-key
+seekfetch opencode import --dotenv ~/.env --name OPENCODE_API_KEY
+seekfetch opencode show
+seekfetch opencode path
+seekfetch opencode clear
+```
 
 ### Batch fetch
 
@@ -145,12 +170,12 @@ seekfetch usage --last 6m --group-by month --json
 
 ## Credentials
 
-The API key is stored in an encrypted file under the platform config directory:
+DeepSeek uses `credentials` and OpenCode Go uses `credentials-opencode`, both encrypted files under the platform config directory:
 
-- Linux: `~/.config/seekfetch/credentials`
-- Windows: `%APPDATA%\seekfetch\credentials`
+- Linux: `~/.config/seekfetch/credentials`, `~/.config/seekfetch/credentials-opencode`
+- Windows: `%APPDATA%\seekfetch\credentials`, `%APPDATA%\seekfetch\credentials-opencode`
 
-Three ways to configure it:
+Three ways to configure each key:
 
 ```bash
 # Interactive: hidden input when stdin is a terminal
@@ -163,7 +188,7 @@ grep -E '^DEEPSEEK_API_KEY=' ~/.env | cut -d= -f2- | seekfetch config set-key --
 seekfetch config import --dotenv ~/.env --name DEEPSEEK_API_KEY
 ```
 
-Replace `~/.env` with whichever dotenv file holds your key. `DEEPSEEK_API_KEY` in the environment overrides the stored credential. The key is never printed; `config show` reports only a masked value, and API error messages are scrubbed of key material before display. `config path` prints the configuration and credential file locations.
+Replace `~/.env` with whichever dotenv file holds your key. `DEEPSEEK_API_KEY` in the environment overrides the stored credential. For OpenCode Go, substitute `seekfetch opencode set-key` / `seekfetch opencode import` and `OPENCODE_API_KEY`. Keys are never printed; `config show` reports only masked values, and API error messages are scrubbed of key material before display. `config path` prints the configuration and both credential file locations.
 
 **Threat model:** the file is encrypted with a key derived from the machine id and user name, so copying it to another machine does not reveal the secret. It does not protect against a process running as the same user (or root) that deliberately decrypts it.
 
@@ -223,8 +248,9 @@ src/
   cli.rs          clap definitions
   commands.rs     CLI subcommand implementations
   config.rs       config.toml loading and platform paths
-  credentials.rs  encrypted credential storage
+  credentials.rs  encrypted credential storage (one file per provider)
   api.rs          DeepSeek Search/Fetch/Balance client, retry, typed errors
+  opencode.rs     OpenCode Go quota client
   cache.rs        local response cache with keyword inspection
   usage.rs        local usage log and cost estimate
   mcp.rs          stdio MCP server

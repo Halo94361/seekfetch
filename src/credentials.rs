@@ -8,111 +8,186 @@ use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 
 pub const KEY_ENV: &str = "DEEPSEEK_API_KEY";
+pub const OPENCODE_KEY_ENV: &str = "OPENCODE_API_KEY";
 
 const FILE_VERSION: u8 = 1;
 const KDF_SALT: &[u8] = b"seekfetch credential v1";
 const NONCE_LEN: usize = 24;
 
+/// One provider's encrypted credential file and its environment override.
+#[derive(Debug, Clone, Copy)]
+pub struct KeyStore {
+    label: &'static str,
+    env_var: &'static str,
+    file_name: &'static str,
+    set_key_command: &'static str,
+    import_command: &'static str,
+}
+
+impl KeyStore {
+    pub const DEEPSEEK: Self = Self {
+        label: "DeepSeek",
+        env_var: KEY_ENV,
+        file_name: "credentials",
+        set_key_command: "seekfetch config set-key",
+        import_command: "seekfetch config import",
+    };
+
+    pub const OPENCODE: Self = Self {
+        label: "OpenCode Go",
+        env_var: OPENCODE_KEY_ENV,
+        file_name: "credentials-opencode",
+        set_key_command: "seekfetch opencode set-key",
+        import_command: "seekfetch opencode import",
+    };
+
+    pub fn env_var(&self) -> &'static str {
+        self.env_var
+    }
+
+    pub fn path(&self) -> Result<PathBuf> {
+        let dir = dirs::config_dir()
+            .context("cannot locate the platform config directory")?
+            .join("seekfetch");
+        Ok(dir.join(self.file_name))
+    }
+
+    /// Key from the environment override, ignoring blank values.
+    pub fn env_key(&self) -> Option<String> {
+        std::env::var(self.env_var)
+            .ok()
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty())
+    }
+
+    pub fn load(&self) -> Result<String> {
+        if let Some(key) = self.env_key() {
+            return Ok(key);
+        }
+
+        let path = self.path()?;
+        if !path.exists() {
+            bail!("{}", self.missing_key_message());
+        }
+
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        open(&machine_key()?, text.trim()).with_context(|| {
+            format!(
+                "failed to decrypt the {} credential file; the machine key may have changed, run `{}` again",
+                self.label, self.set_key_command
+            )
+        })
+    }
+
+    pub fn set_key(&self, stdin: bool, from_env: Option<&str>) -> Result<()> {
+        let key = if let Some(name) = from_env {
+            std::env::var(name)
+                .with_context(|| format!("environment variable {name} is not set"))?
+        } else if stdin || !std::io::stdin().is_terminal() {
+            let mut buf = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .context("failed to read the API key from stdin")?;
+            buf
+        } else {
+            rpassword::prompt_password(format!("{} API key: ", self.label))
+                .context("failed to read the API key")?
+        };
+
+        let key = normalize_key(&key)?;
+        self.store(&key)
+    }
+
+    pub fn import_dotenv(&self, dotenv: &Path, name: &str) -> Result<()> {
+        let text = std::fs::read_to_string(dotenv)
+            .with_context(|| format!("failed to read {}", dotenv.display()))?;
+
+        let value = text
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let line = line.strip_prefix("export ").unwrap_or(line);
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == name).then(|| value.to_string())
+            })
+            .next()
+            .with_context(|| format!("{name} not found in {}", dotenv.display()))?;
+
+        let key = normalize_key(&value)?;
+        self.store(&key)
+    }
+
+    pub fn clear(&self) -> Result<()> {
+        let path = self.path()?;
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+            println!("removed {}", path.display());
+        } else {
+            println!("no credential file at {}", path.display());
+        }
+        Ok(())
+    }
+
+    fn store(&self, key: &str) -> Result<()> {
+        let path = self.path()?;
+        let dir = path
+            .parent()
+            .context("credential path has no parent directory")?;
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("failed to create {}", dir.display()))?;
+
+        let sealed = seal(&machine_key()?, key)?;
+        std::fs::write(&path, format!("{sealed}\n"))
+            .with_context(|| format!("failed to write {}", path.display()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("failed to set permissions on {}", dir.display()))?;
+        }
+
+        println!(
+            "stored encrypted {} credential at {}",
+            self.label,
+            path.display()
+        );
+        Ok(())
+    }
+
+    fn missing_key_message(&self) -> String {
+        format!(
+            "no {} API key configured; set one first:\n  \
+             {}                   (interactive prompt, or pipe via stdin)\n  \
+             {} --dotenv <FILE>    (import from a dotenv file)\n  \
+             or export {}=YOUR_API_KEY    (environment override)",
+            self.label, self.set_key_command, self.import_command, self.env_var
+        )
+    }
+}
+
 pub fn path() -> Result<PathBuf> {
-    let dir = dirs::config_dir()
-        .context("cannot locate the platform config directory")?
-        .join("seekfetch");
-    Ok(dir.join("credentials"))
+    KeyStore::DEEPSEEK.path()
 }
 
 pub fn set_key(stdin: bool, from_env: Option<&str>) -> Result<()> {
-    let key = if let Some(name) = from_env {
-        std::env::var(name).with_context(|| format!("environment variable {name} is not set"))?
-    } else if stdin || !std::io::stdin().is_terminal() {
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("failed to read the API key from stdin")?;
-        buf
-    } else {
-        rpassword::prompt_password("DeepSeek API key: ").context("failed to read the API key")?
-    };
-
-    let key = normalize_key(&key)?;
-    store(&key)
+    KeyStore::DEEPSEEK.set_key(stdin, from_env)
 }
 
 pub fn import_dotenv(dotenv: &Path, name: &str) -> Result<()> {
-    let text = std::fs::read_to_string(dotenv)
-        .with_context(|| format!("failed to read {}", dotenv.display()))?;
-
-    let value = text
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            let line = line.strip_prefix("export ").unwrap_or(line);
-            let (key, value) = line.split_once('=')?;
-            (key.trim() == name).then(|| value.to_string())
-        })
-        .next()
-        .with_context(|| format!("{name} not found in {}", dotenv.display()))?;
-
-    let key = normalize_key(&value)?;
-    store(&key)
+    KeyStore::DEEPSEEK.import_dotenv(dotenv, name)
 }
 
 pub fn clear() -> Result<()> {
-    let path = path()?;
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .with_context(|| format!("failed to remove {}", path.display()))?;
-        println!("removed {}", path.display());
-    } else {
-        println!("no credential file at {}", path.display());
-    }
-    Ok(())
+    KeyStore::DEEPSEEK.clear()
 }
 
 pub fn load_key() -> Result<String> {
-    if let Ok(key) = std::env::var(KEY_ENV) {
-        if !key.trim().is_empty() {
-            return Ok(key);
-        }
-    }
-
-    let path = path()?;
-    if !path.exists() {
-        bail!(
-            "no API key configured; set one first:\n  \
-             seekfetch config set-key                   (interactive prompt, or pipe via stdin)\n  \
-             seekfetch config import --dotenv <FILE>    (import from a dotenv file)\n  \
-             or export DEEPSEEK_API_KEY=YOUR_API_KEY    (environment override)"
-        );
-    }
-
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    open(&machine_key()?, text.trim())
-        .context("failed to decrypt the credential file; the machine key may have changed, run `seekfetch config set-key` again")
-}
-
-fn store(key: &str) -> Result<()> {
-    let path = path()?;
-    let dir = path
-        .parent()
-        .context("credential path has no parent directory")?;
-    std::fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
-
-    let sealed = seal(&machine_key()?, key)?;
-    std::fs::write(&path, format!("{sealed}\n"))
-        .with_context(|| format!("failed to write {}", path.display()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("failed to set permissions on {}", path.display()))?;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("failed to set permissions on {}", dir.display()))?;
-    }
-
-    println!("stored encrypted credential at {}", path.display());
-    Ok(())
+    KeyStore::DEEPSEEK.load()
 }
 
 fn machine_key() -> Result<[u8; 32]> {
@@ -245,5 +320,22 @@ mod tests {
     fn mask_shows_only_tail() {
         assert_eq!(mask_key("sk-1234567890abcd"), "****abcd");
         assert_eq!(mask_key("short"), "****");
+    }
+
+    #[test]
+    fn providers_use_separate_files_and_env_vars() {
+        assert_eq!(KeyStore::DEEPSEEK.file_name, "credentials");
+        assert_eq!(KeyStore::OPENCODE.file_name, "credentials-opencode");
+        assert_eq!(KeyStore::DEEPSEEK.env_var, "DEEPSEEK_API_KEY");
+        assert_eq!(KeyStore::OPENCODE.env_var, "OPENCODE_API_KEY");
+        assert_ne!(KeyStore::DEEPSEEK.label, KeyStore::OPENCODE.label);
+    }
+
+    #[test]
+    fn missing_key_message_names_the_provider_commands() {
+        let message = KeyStore::OPENCODE.missing_key_message();
+        assert!(message.contains("OpenCode Go"));
+        assert!(message.contains("seekfetch opencode set-key"));
+        assert!(message.contains("OPENCODE_API_KEY"));
     }
 }

@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-面向 [DeepSeek Search/Fetch API](https://api-docs.deepseek.com/zh-cn/guides/search) 的非官方 MCP 服务器与 CLI，以单个 Rust 二进制分发。仓库和 Cargo 包名为 `seekfetch-rs`，安装后的二进制仍为 `seekfetch`。
+面向 [DeepSeek Search/Fetch API](https://api-docs.deepseek.com/zh-cn/guides/search) 的非官方 MCP 服务器与 CLI，另附 OpenCode Go 额度查询，以单个 Rust 二进制分发。仓库和 Cargo 包名为 `seekfetch-rs`，安装后的二进制仍为 `seekfetch`。
 
 CLI、加密凭据存储和 MCP 服务器均已完整实现。`seekfetch doctor` 会检查配置、凭据和 API 连通性。
 
@@ -19,6 +19,7 @@ CLI、加密凭据存储和 MCP 服务器均已完整实现。`seekfetch doctor`
 | `deepseek_search` | `query`, `count`, `need_content`, `max_chars`, `min_rerank`, `min_authority`, `domain`, `no_cache`, `refresh` | `title`, `url`, `summary`，可选 `content`，`rerank_score`, `authority` |
 | `deepseek_fetch` | `url` 或 `urls`（批量，最多 20 个），`max_chars`, `no_cache`, `refresh` | `title`, `url`, `content`, `truncated`；批量模式每个 URL 返回一条，失败信息内联 |
 | `deepseek_balance` | — | `is_available`, `balance_infos`（`currency`, `total_balance`, `granted_balance`, `topped_up_balance`） |
+| `opencode_usage` | — | `usage.rolling` / `weekly` / `monthly`：`status`, `percent`, `resetsAt` |
 
 已知的服务端提取行为（实测，不可配置）：HTML 表格会被压平为以竖线连接的纯文本行，而不是 Markdown 表格；非活动标签页或隐藏区域中的内容可能被完全省略。
 
@@ -78,6 +79,8 @@ seekfetch fetch url1 url2 url3                        # 批量：页面之间用
 seekfetch fetch --input urls.txt --output pages.md    # 每行一个 URL，# 开头为注释
 cat urls.txt | seekfetch fetch                        # 从 stdin 批量读取
 seekfetch balance
+seekfetch opencode                                    # OpenCode Go 额度窗口
+seekfetch opencode --json                             # 结构化输出
 seekfetch usage                                       # 调用次数与预估费用
 seekfetch cache list [keyword]                        # 查看缓存请求
 seekfetch doctor
@@ -94,6 +97,28 @@ CNY
 ```
 
 不实现余额接口的兼容网关会返回 404。
+
+### OpenCode Go 额度
+
+`seekfetch opencode` 直连公开的 OpenCode 代理（`GET https://opencode.ai/zen/go/v1/usage`），输出各额度窗口已用百分比：
+
+```
+rolling   7%  ok  resets 2026-10-23 10:53 UTC
+weekly    3%  ok  resets 2026-10-26 00:00 UTC
+monthly   1%  ok  resets 2026-11-23 05:35 UTC
+```
+
+上游只提供这三个百分比，没有按模型/按日的拆分、token 数、费用或套餐名。本地 session 代理不转发该路由，因此请求始终发往 `opencode.ai`。`--json` 输出结构化结果，`--output` 写入文件；额度持续变化，所以不做缓存。
+
+OpenCode Go 的 key 使用独立的加密文件（`credentials-opencode`），`OPENCODE_API_KEY` 可覆盖：
+
+```bash
+seekfetch opencode set-key
+seekfetch opencode import --dotenv ~/.env --name OPENCODE_API_KEY
+seekfetch opencode show
+seekfetch opencode path
+seekfetch opencode clear
+```
 
 ### 批量抓取
 
@@ -145,12 +170,12 @@ seekfetch usage --last 6m --group-by month --json
 
 ## 凭据
 
-API key 保存在平台配置目录下的加密文件中：
+DeepSeek 使用 `credentials`，OpenCode Go 使用 `credentials-opencode`，两者都是平台配置目录下的加密文件：
 
-- Linux：`~/.config/seekfetch/credentials`
-- Windows：`%APPDATA%\seekfetch\credentials`
+- Linux：`~/.config/seekfetch/credentials`、`~/.config/seekfetch/credentials-opencode`
+- Windows：`%APPDATA%\seekfetch\credentials`、`%APPDATA%\seekfetch\credentials-opencode`
 
-三种配置方式：
+每个 key 各有三种配置方式：
 
 ```bash
 # 交互式：stdin 是终端时隐藏输入
@@ -163,7 +188,7 @@ grep -E '^DEEPSEEK_API_KEY=' ~/.env | cut -d= -f2- | seekfetch config set-key --
 seekfetch config import --dotenv ~/.env --name DEEPSEEK_API_KEY
 ```
 
-将 `~/.env` 替换为存放密钥的 dotenv 文件。环境变量 `DEEPSEEK_API_KEY` 会覆盖已存储的凭据。密钥永远不会被打印；`config show` 只显示掩码值，API 错误信息在展示前也会清除密钥内容。`config path` 打印配置和凭据文件位置。
+将 `~/.env` 替换为存放密钥的 dotenv 文件。环境变量 `DEEPSEEK_API_KEY` 会覆盖已存储的凭据；OpenCode Go 对应命令为 `seekfetch opencode set-key` / `seekfetch opencode import`，环境变量为 `OPENCODE_API_KEY`。密钥永远不会被打印；`config show` 只显示掩码值，API 错误信息在展示前也会清除密钥内容。`config path` 打印配置和两个凭据文件位置。
 
 **威胁模型：** 文件使用由机器 ID 和用户名派生出的密钥加密，复制到另一台机器无法直接解密。它不能防御以同一用户（或 root）身份运行并刻意解密的进程。
 
@@ -223,8 +248,9 @@ src/
   cli.rs          clap 定义
   commands.rs     CLI 子命令实现
   config.rs       config.toml 加载和平台路径
-  credentials.rs  加密凭据存储
+  credentials.rs  加密凭据存储（每个 provider 一个文件）
   api.rs          DeepSeek Search/Fetch/Balance 客户端、重试、类型化错误
+  opencode.rs     OpenCode Go 额度客户端
   cache.rs        带关键词检查的本地响应缓存
   usage.rs        本地用量日志和费用估算
   mcp.rs          stdio MCP 服务器

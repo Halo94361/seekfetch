@@ -25,13 +25,14 @@ git push github v0.1.0
 
 - `src/main.rs` — entry point, dispatch and exit-code mapping (kept thin)
 - `src/cli.rs` — clap command surface
-- `src/commands.rs` — CLI subcommand implementations (search/fetch batch/balance/cache/usage/config/doctor)
+- `src/commands.rs` — CLI subcommand implementations (search/fetch batch/balance/opencode/cache/usage/config/doctor)
 - `src/config.rs` — `config.toml` loading and platform paths
-- `src/credentials.rs` — encrypted credential file (machine-bound key)
+- `src/credentials.rs` — encrypted credential files, one per provider (machine-bound key)
 - `src/api.rs` — DeepSeek Search/Fetch/Balance client, retry, typed errors and error mapping
+- `src/opencode.rs` — OpenCode Go quota client (`GET /zen/go/v1/usage`, rolling/weekly/monthly percentages)
 - `src/cache.rs` — local response cache (24h TTL default), keyword-inspectable entries
 - `src/usage.rs` — local usage log, time filters and cost estimate
-- `src/mcp.rs` — stdio MCP server exposing `deepseek_search` / `deepseek_fetch` / `deepseek_balance`
+- `src/mcp.rs` — stdio MCP server exposing `deepseek_search` / `deepseek_fetch` / `deepseek_balance` / `opencode_usage`
 - `src/output.rs` — output rendering, truncation and `--output` file writing
 
 Keep files split by functional module; do not let any single file grow unwieldy.
@@ -40,7 +41,7 @@ Keep files split by functional module; do not let any single file grow unwieldy.
 
 - Never print an API key, pass it through argv, or commit it.
 - Credentials live in the platform config directory, never in this repository.
-- `DEEPSEEK_API_KEY` overrides the stored credential.
+- `DEEPSEEK_API_KEY` overrides the stored DeepSeek credential; `OPENCODE_API_KEY` does the same for OpenCode Go.
 - Keep MCP tool output truncated by default; a search result should not dump raw API JSON into the model context.
 - All DeepSeek API calls go through `DeepSeekClient::request_json`, which enforces the process-wide `min_interval_ms` throttle; cache hits bypass it. Do not add raw HTTP paths around it.
 - Never put credentials in source, config, tests, comments, docs, examples, logs, or commit messages. Runtime secrets come from environment variables or the encrypted credential file only.
