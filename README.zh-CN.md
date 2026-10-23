@@ -24,18 +24,24 @@ CLI、加密凭据存储和 MCP 服务器均已完整实现。`seekfetch doctor`
 
 ## 安装
 
-预编译二进制附在 [GitHub Releases](https://github.com/Halo94361/seekfetch-rs/releases)：
+Linux x86_64，安装到 `~/.local/bin`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Halo94361/seekfetch-rs/main/install.sh | sh
+```
+
+用 `PREFIX=/usr/local/bin` 指定其他安装目录。预编译 Windows 二进制和历史版本附在 [GitHub Releases](https://github.com/Halo94361/seekfetch-rs/releases)：
 
 - `seekfetch-vX.Y.Z-linux-x86_64`（Linux）
 - `seekfetch-vX.Y.Z-windows-x86_64.exe`（Windows）
 
-或从源码构建：
+或从源码安装：
 
 ```bash
-cargo build --release
-# Linux: target/release/seekfetch
-# Windows: target/x86_64-pc-windows-gnu/release/seekfetch.exe
+git clone https://github.com/Halo94361/seekfetch-rs && cargo install --path ./seekfetch-rs --locked
 ```
+
+在 Linux 上交叉编译 Windows GNU 版本时，给 `cargo build --release` 加上 `--target x86_64-pc-windows-gnu`。
 
 Shell 补全在运行时生成：
 

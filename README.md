@@ -24,18 +24,24 @@ Known server-side extraction behavior (observed, not configurable): HTML tables 
 
 ## Install
 
-Prebuilt binaries are attached to [GitHub Releases](https://github.com/Halo94361/seekfetch-rs/releases):
+Linux x86_64, installs `seekfetch` into `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Halo94361/seekfetch-rs/main/install.sh | sh
+```
+
+Set `PREFIX=/usr/local/bin` to choose another directory. Prebuilt Windows binaries and older releases are attached to [GitHub Releases](https://github.com/Halo94361/seekfetch-rs/releases):
 
 - `seekfetch-vX.Y.Z-linux-x86_64` (Linux)
 - `seekfetch-vX.Y.Z-windows-x86_64.exe` (Windows)
 
-Or build from source:
+Build from source instead:
 
 ```bash
-cargo build --release
-# Linux: target/release/seekfetch
-# Windows: target/x86_64-pc-windows-gnu/release/seekfetch.exe
+git clone https://github.com/Halo94361/seekfetch-rs && cargo install --path ./seekfetch-rs --locked
 ```
+
+For a Windows GNU build from Linux, add `--target x86_64-pc-windows-gnu` to `cargo build --release`.
 
 Shell completions are generated at runtime:
 
